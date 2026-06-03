@@ -7,10 +7,10 @@ import enum
 
 
 class WorkspaceRole(str, enum.Enum):
-    OWNER = "owner"
-    ADMIN = "admin"
-    MEMBER = "member"
-    VIEWER = "viewer"
+    OWNER = "OWNER"
+    ADMIN = "ADMIN"
+    MEMBER = "MEMBER"
+    VIEWER = "VIEWER"
 
 
 class Workspace(Base, UUIDMixin, TimestampMixin):

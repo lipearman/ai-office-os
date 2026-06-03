@@ -1,17 +1,18 @@
 import uuid
+import json
+import asyncio
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 from app.core.database import get_db
-from app.models.conversation import Conversation, Message, MessageRole
+from app.models.conversation import Conversation, Message, MessageRole, ConversationStatus
 from app.models.agent import Agent, AgentStatus
 from app.models.user import User
 from app.schemas.conversation import ConversationOut, ConversationCreate, MessageOut, MessageCreate
 from app.api.deps import get_current_user
-import json
-import asyncio
+from app.websocket.manager import manager
 
 router = APIRouter(prefix="/conversations", tags=["conversations"])
 
@@ -28,7 +29,7 @@ async def list_conversations(
         .where(
             Conversation.workspace_id == workspace_id,
             Conversation.user_id == current_user.id,
-            Conversation.status == "active",
+            Conversation.status == ConversationStatus.ACTIVE,
         )
         .order_by(Conversation.created_at.desc())
         .limit(50)
@@ -42,7 +43,6 @@ async def create_conversation(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    # Check agent exists
     result = await db.execute(select(Agent).where(Agent.id == data.agent_id))
     agent = result.scalar_one_or_none()
     if not agent:
@@ -57,7 +57,6 @@ async def create_conversation(
     db.add(conv)
     await db.flush()
 
-    # Inject system message
     system_msg = Message(
         conversation_id=conv.id,
         role=MessageRole.SYSTEM,
@@ -65,7 +64,6 @@ async def create_conversation(
     )
     db.add(system_msg)
     await db.flush()
-
     conv.messages = [system_msg]
     return ConversationOut.model_validate(conv)
 
@@ -103,35 +101,52 @@ async def send_message(
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
-    # Save user message
-    user_msg = Message(
-        conversation_id=conv.id,
-        role=MessageRole.USER,
-        content=data.content,
-    )
-    db.add(user_msg)
-    await db.flush()
-
-    # Mark agent as busy
     agent_result = await db.execute(select(Agent).where(Agent.id == conv.agent_id))
     agent = agent_result.scalar_one_or_none()
+
+    # Save user message
+    user_msg = Message(conversation_id=conv.id, role=MessageRole.USER, content=data.content)
+    db.add(user_msg)
     if agent:
         agent.status = AgentStatus.BUSY
+    await db.flush()
 
-    # Generate AI reply
-    reply_text = await _generate_reply(agent, conv.messages, data.content)
+    # Broadcast typing to workspace
+    if agent:
+        await manager.broadcast_workspace(
+            str(conv.workspace_id),
+            {"type": "agent.status", "agent_id": str(agent.id), "status": "BUSY"},
+        )
 
-    assistant_msg = Message(
-        conversation_id=conv.id,
-        role=MessageRole.ASSISTANT,
-        content=reply_text,
+    # Run agent
+    history = [{"role": m.role.value if hasattr(m.role, 'value') else m.role, "content": m.content}
+               for m in conv.messages if m.role != MessageRole.SYSTEM]
+
+    from app.agents.runtime import run_agent
+    reply_text = await run_agent(
+        user_message=data.content,
+        agent_type=agent.agent_type if agent else "reception",
+        agent_id=str(agent.id) if agent else "",
+        agent_name=agent.name if agent else "AI",
+        workspace_id=str(conv.workspace_id),
+        user_id=str(current_user.id),
+        conversation_id=str(conv.id),
+        history=history,
     )
-    db.add(assistant_msg)
 
+    assistant_msg = Message(conversation_id=conv.id, role=MessageRole.ASSISTANT, content=reply_text)
+    db.add(assistant_msg)
     if agent:
         agent.status = AgentStatus.IDLE
-
     await db.flush()
+
+    # Broadcast idle status
+    if agent:
+        await manager.broadcast_workspace(
+            str(conv.workspace_id),
+            {"type": "agent.status", "agent_id": str(agent.id), "status": "IDLE"},
+        )
+
     return MessageOut.model_validate(assistant_msg)
 
 
@@ -154,86 +169,56 @@ async def stream_message(
     agent_result = await db.execute(select(Agent).where(Agent.id == conv.agent_id))
     agent = agent_result.scalar_one_or_none()
 
-    user_msg = Message(
-        conversation_id=conv.id,
-        role=MessageRole.USER,
-        content=data.content,
-    )
+    # Save user message
+    user_msg = Message(conversation_id=conv.id, role=MessageRole.USER, content=data.content)
     db.add(user_msg)
     if agent:
         agent.status = AgentStatus.BUSY
     await db.flush()
+    await db.commit()
 
-    full_reply = await _generate_reply(agent, conv.messages, data.content)
+    history = [{"role": m.role.value if hasattr(m.role, 'value') else m.role, "content": m.content}
+               for m in conv.messages if m.role != MessageRole.SYSTEM]
 
     async def event_stream():
-        # Stream word by word for realistic feel
-        words = full_reply.split()
-        buffer = ""
-        for i, word in enumerate(words):
-            buffer += word + (" " if i < len(words) - 1 else "")
-            chunk = {"delta": word + (" " if i < len(words) - 1 else ""), "done": False}
-            yield f"data: {json.dumps(chunk)}\n\n"
-            await asyncio.sleep(0.04)
+        from app.agents.runtime import stream_agent
+        from app.core.database import AsyncSessionLocal
 
-        # Save complete message
-        assistant_msg = Message(
-            conversation_id=conv.id,
-            role=MessageRole.ASSISTANT,
-            content=full_reply,
-        )
-        db.add(assistant_msg)
-        if agent:
-            agent.status = AgentStatus.IDLE
-        await db.commit()
+        full_reply = ""
+        try:
+            async for delta, done in stream_agent(
+                user_message=data.content,
+                agent_type=agent.agent_type if agent else "reception",
+                agent_id=str(agent.id) if agent else "",
+                agent_name=agent.name if agent else "AI",
+                workspace_id=str(conv.workspace_id),
+                user_id=str(current_user.id),
+                conversation_id=str(conv.id),
+                history=history,
+            ):
+                if not done:
+                    full_reply += delta
+                    yield f"data: {json.dumps({'delta': delta, 'done': False})}\n\n"
+                else:
+                    # Save final message
+                    async with AsyncSessionLocal() as save_db:
+                        assistant_msg = Message(
+                            conversation_id=conv.id,
+                            role=MessageRole.ASSISTANT,
+                            content=full_reply,
+                        )
+                        save_db.add(assistant_msg)
+                        if agent:
+                            agent_row = await save_db.get(Agent, agent.id)
+                            if agent_row:
+                                agent_row.status = AgentStatus.IDLE
+                        await save_db.commit()
+                        await save_db.refresh(assistant_msg)
+                        msg_id = str(assistant_msg.id)
 
-        yield f"data: {json.dumps({'delta': '', 'done': True, 'message_id': str(assistant_msg.id)})}\n\n"
+                    yield f"data: {json.dumps({'delta': '', 'done': True, 'message_id': msg_id})}\n\n"
+
+        except Exception as e:
+            yield f"data: {json.dumps({'delta': f'Error: {str(e)}', 'done': True})}\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
-
-
-async def _generate_reply(agent: Agent | None, history: list, user_input: str) -> str:
-    """Generate AI reply — uses configured LLM or fallback."""
-    from app.core.config import settings
-
-    if agent and settings.OPENAI_API_KEY:
-        try:
-            from openai import AsyncOpenAI
-            client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
-            messages = [{"role": "system", "content": agent.system_prompt}]
-            for msg in history[-10:]:  # last 10 messages
-                if msg.role in ("user", "assistant"):
-                    messages.append({"role": msg.role, "content": msg.content})
-            messages.append({"role": "user", "content": user_input})
-            resp = await client.chat.completions.create(
-                model=agent.model_name if agent.model_provider == "openai" else "gpt-4o-mini",
-                messages=messages,
-                max_tokens=1024,
-            )
-            return resp.choices[0].message.content or ""
-        except Exception:
-            pass
-
-    if agent and settings.OLLAMA_BASE_URL:
-        try:
-            import httpx
-            async with httpx.AsyncClient(timeout=30) as client:
-                resp = await client.post(
-                    f"{settings.OLLAMA_BASE_URL}/api/chat",
-                    json={
-                        "model": agent.model_name if agent.model_provider == "ollama" else "llama3.2",
-                        "messages": [
-                            {"role": "system", "content": agent.system_prompt},
-                            {"role": "user", "content": user_input},
-                        ],
-                        "stream": False,
-                    },
-                )
-                if resp.status_code == 200:
-                    return resp.json()["message"]["content"]
-        except Exception:
-            pass
-
-    # Fallback — rule-based reply
-    name = agent.name if agent else "AI"
-    return f"Hello! I'm {name}. I received your message: \"{user_input}\". (Connect an LLM provider in .env to enable AI responses.)"

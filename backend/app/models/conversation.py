@@ -7,16 +7,16 @@ import enum
 
 
 class MessageRole(str, enum.Enum):
-    USER = "user"
-    ASSISTANT = "assistant"
-    SYSTEM = "system"
-    TOOL = "tool"
+    USER = "USER"
+    ASSISTANT = "ASSISTANT"
+    SYSTEM = "SYSTEM"
+    TOOL = "TOOL"
 
 
 class ConversationStatus(str, enum.Enum):
-    ACTIVE = "active"
-    ARCHIVED = "archived"
-    DELETED = "deleted"
+    ACTIVE = "ACTIVE"
+    ARCHIVED = "ARCHIVED"
+    DELETED = "DELETED"
 
 
 class Conversation(Base, UUIDMixin, TimestampMixin):

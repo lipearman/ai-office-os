@@ -1,12 +1,14 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
 from app.core.config import settings
 from app.core.database import init_db
 from app.core.redis import close_redis
-from app.api.v1 import auth, workspaces, health, offices, agents, conversations
+from app.api.v1 import auth, workspaces, health, offices, agents, conversations, seed
 from app.websocket.router import router as ws_router
 import structlog
+import traceback
 
 log = structlog.get_logger()
 
@@ -36,10 +38,22 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(health.router, prefix="/api/v1")
-app.include_router(auth.router, prefix="/api/v1")
-app.include_router(workspaces.router, prefix="/api/v1")
-app.include_router(offices.router, prefix="/api/v1")
-app.include_router(agents.router, prefix="/api/v1")
-app.include_router(conversations.router, prefix="/api/v1")
+
+@app.exception_handler(Exception)
+async def debug_exception_handler(request: Request, exc: Exception):
+    tb = traceback.format_exc()
+    log.error("Unhandled exception", path=str(request.url), error=str(exc))
+    return JSONResponse(
+        status_code=500,
+        content={"detail": str(exc), "traceback": tb if settings.DEBUG else None},
+    )
+
+
+app.include_router(health.router,         prefix="/api/v1")
+app.include_router(auth.router,           prefix="/api/v1")
+app.include_router(workspaces.router,     prefix="/api/v1")
+app.include_router(offices.router,        prefix="/api/v1")
+app.include_router(agents.router,         prefix="/api/v1")
+app.include_router(conversations.router,  prefix="/api/v1")
+app.include_router(seed.router,           prefix="/api/v1")
 app.include_router(ws_router)

@@ -1,17 +1,30 @@
 import uuid
 from datetime import datetime
-from pydantic import BaseModel, EmailStr
+from typing import Annotated
+from pydantic import BaseModel, AfterValidator
+import email_validator as ev
+
+
+def _validate_email(v: str) -> str:
+    try:
+        info = ev.validate_email(v, check_deliverability=False)
+        return info.normalized
+    except ev.EmailNotValidError as e:
+        raise ValueError(str(e))
+
+
+Email = Annotated[str, AfterValidator(_validate_email)]
 
 
 class UserCreate(BaseModel):
-    email: EmailStr
+    email: Email
     username: str
     full_name: str
     password: str
 
 
 class UserLogin(BaseModel):
-    email: EmailStr
+    email: Email
     password: str
 
 

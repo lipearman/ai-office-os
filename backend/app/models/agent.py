@@ -7,10 +7,10 @@ import enum
 
 
 class AgentStatus(str, enum.Enum):
-    IDLE = "idle"
-    BUSY = "busy"
-    OFFLINE = "offline"
-    ERROR = "error"
+    IDLE = "IDLE"
+    BUSY = "BUSY"
+    OFFLINE = "OFFLINE"
+    ERROR = "ERROR"
 
 
 class Agent(Base, UUIDMixin, TimestampMixin):

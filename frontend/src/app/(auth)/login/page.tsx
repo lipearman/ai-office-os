@@ -17,14 +17,23 @@ const schema = z.object({
 
 type FormData = z.infer<typeof schema>;
 
+const TEST_ACCOUNTS = [
+  { label: "Admin", email: "admin@example.com", password: "Admin1234!", emoji: "👔" },
+];
+
 export default function LoginPage() {
   const router = useRouter();
   const login = useAuthStore((s) => s.login);
   const [error, setError] = useState("");
 
-  const { register, handleSubmit, formState: { errors, isSubmitting } } = useForm<FormData>({
+  const { register, handleSubmit, setValue, formState: { errors, isSubmitting } } = useForm<FormData>({
     resolver: zodResolver(schema),
   });
+
+  const fillAccount = (email: string, password: string) => {
+    setValue("email", email, { shouldValidate: true });
+    setValue("password", password, { shouldValidate: true });
+  };
 
   const onSubmit = async (data: FormData) => {
     try {
@@ -32,7 +41,12 @@ export default function LoginPage() {
       await login(data.email, data.password);
       router.push("/dashboard");
     } catch (e: any) {
-      setError(e.response?.data?.detail || "Login failed");
+      const detail = e.response?.data?.detail;
+      if (Array.isArray(detail)) {
+        setError(detail.map((d: any) => d.msg).join(", "));
+      } else {
+        setError(detail || "Login failed");
+      }
     }
   };
 
@@ -46,6 +60,33 @@ export default function LoginPage() {
           </div>
           <h1 className="text-2xl font-bold text-white">AI Office OS</h1>
           <p className="text-white/50 text-sm mt-1">Sign in to your workspace</p>
+        </div>
+
+        {/* Quick fill */}
+        <div className="mb-4 rounded-xl border border-white/8 bg-white/3 p-4">
+          <p className="text-xs font-medium text-white/40 mb-3 uppercase tracking-wider">Test Accounts</p>
+          <div className="flex flex-col gap-2">
+            {TEST_ACCOUNTS.map((acc) => (
+              <button
+                key={acc.email}
+                type="button"
+                onClick={() => fillAccount(acc.email, acc.password)}
+                className="flex items-center gap-3 rounded-lg border border-white/8 bg-white/4 px-4 py-3 text-left hover:border-primary-500/40 hover:bg-primary-600/10 transition-all group"
+              >
+                <span className="text-xl">{acc.emoji}</span>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-semibold text-white">{acc.label}</p>
+                  <p className="text-xs text-white/40 truncate">{acc.email}</p>
+                </div>
+                <div className="text-right shrink-0">
+                  <p className="text-xs text-white/25 font-mono">{acc.password}</p>
+                  <p className="text-[10px] text-primary-400 opacity-0 group-hover:opacity-100 transition-opacity">
+                    คลิกเพื่อใส่ข้อมูล →
+                  </p>
+                </div>
+              </button>
+            ))}
+          </div>
         </div>
 
         {/* Card */}

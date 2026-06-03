@@ -7,10 +7,10 @@ import enum
 
 
 class UserRole(str, enum.Enum):
-    SUPER_ADMIN = "super_admin"
-    ADMIN = "admin"
-    MEMBER = "member"
-    VIEWER = "viewer"
+    SUPER_ADMIN = "SUPER_ADMIN"
+    ADMIN = "ADMIN"
+    MEMBER = "MEMBER"
+    VIEWER = "VIEWER"
 
 
 class User(Base, UUIDMixin, TimestampMixin):
