@@ -81,8 +81,22 @@ async def create_office(
         rooms.append(room)
 
     await db.flush()
-    office.rooms = rooms
-    return OfficeOut.model_validate(office)
+    # Refresh to load server_default values (created_at etc.)
+    await db.refresh(office)
+    for room in rooms:
+        await db.refresh(room)
+    from app.schemas.office import RoomOut
+    return OfficeOut(
+        id=office.id,
+        workspace_id=office.workspace_id,
+        name=office.name,
+        description=office.description,
+        theme=office.theme,
+        config=office.config,
+        is_active=office.is_active,
+        created_at=office.created_at,
+        rooms=[RoomOut.model_validate(r) for r in rooms],
+    )
 
 
 @router.get("/{office_id}", response_model=OfficeOut)
