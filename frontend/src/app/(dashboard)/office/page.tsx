@@ -7,7 +7,6 @@ import { useOfficeStore } from "@/store/office";
 import { RoomPanel } from "@/components/office/RoomPanel";
 import { OfficeToolbar } from "@/components/office/OfficeToolbar";
 
-// Dynamic import — Three.js cannot run on SSR
 const OfficeScene = dynamic(
   () => import("@/components/office/OfficeScene").then((m) => m.OfficeScene),
   { ssr: false }
@@ -23,14 +22,19 @@ export default function OfficePage() {
     fetchAgents(current.id);
   }, [current, fetchOffice, fetchAgents]);
 
+  // Poll agent statuses every 10s
+  useEffect(() => {
+    if (!current) return;
+    const timer = setInterval(() => fetchAgents(current.id), 10_000);
+    return () => clearInterval(timer);
+  }, [current, fetchAgents]);
+
   return (
-    <div className="-m-6 h-[calc(100vh-0px)] relative overflow-hidden">
-      {/* 3D Canvas */}
+    <div className="-m-6 h-screen relative overflow-hidden">
       <div className="absolute inset-0">
         <OfficeScene />
       </div>
 
-      {/* Loading overlay */}
       {loading && (
         <div className="absolute inset-0 flex items-center justify-center bg-black/60 backdrop-blur-sm z-10">
           <div className="flex flex-col items-center gap-3">
@@ -40,7 +44,6 @@ export default function OfficePage() {
         </div>
       )}
 
-      {/* UI overlay */}
       {!loading && (
         <>
           <OfficeToolbar />

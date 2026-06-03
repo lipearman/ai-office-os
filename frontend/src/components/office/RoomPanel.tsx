@@ -1,7 +1,9 @@
 "use client";
 
 import { X, Bot, MessageSquare } from "lucide-react";
-import { useOfficeStore, type Room, type AgentData } from "@/store/office";
+import { useOfficeStore, type AgentData } from "@/store/office";
+import { useChatStore } from "@/store/chat";
+import { useWorkspaceStore } from "@/store/workspace";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
@@ -12,23 +14,27 @@ const STATUS_COLOR: Record<string, string> = {
   error:   "bg-red-400",
 };
 
-function AgentCard({ agent, onClick }: { agent: AgentData; onClick: () => void }) {
+const AGENT_EMOJI: Record<string, string> = {
+  reception: "🤖", ceo: "👔", ba: "📊", dev: "💻",
+  dba: "🗄️", qa: "🔍", rag: "📚",
+};
+
+function AgentCard({
+  agent,
+  onChat,
+  onClick,
+}: {
+  agent: AgentData;
+  onChat: () => void;
+  onClick: () => void;
+}) {
   return (
     <button
       onClick={onClick}
       className="w-full flex items-center gap-3 rounded-xl border border-white/5 bg-white/3 p-3 text-left hover:border-white/15 hover:bg-white/6 transition-all"
     >
-      <div
-        className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-lg"
-        style={{ background: `${agent.agent_type}22`, border: "1px solid rgba(255,255,255,0.1)" }}
-      >
-        {agent.agent_type === "reception" ? "🤖" :
-         agent.agent_type === "ceo" ? "👔" :
-         agent.agent_type === "ba" ? "📊" :
-         agent.agent_type === "dev" ? "💻" :
-         agent.agent_type === "dba" ? "🗄️" :
-         agent.agent_type === "qa" ? "🔍" :
-         agent.agent_type === "rag" ? "📚" : "🤖"}
+      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white/10 text-lg">
+        {AGENT_EMOJI[agent.agent_type] ?? "🤖"}
       </div>
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
@@ -37,23 +43,39 @@ function AgentCard({ agent, onClick }: { agent: AgentData; onClick: () => void }
         </div>
         <p className="text-xs text-white/40 capitalize">{agent.agent_type} agent</p>
       </div>
-      <MessageSquare size={14} className="shrink-0 text-white/30" />
+      <button
+        onClick={(e) => { e.stopPropagation(); onChat(); }}
+        className="shrink-0 rounded-lg p-1.5 text-white/30 hover:bg-primary-600/20 hover:text-primary-400 transition-all"
+        title={`Chat with ${agent.name}`}
+      >
+        <MessageSquare size={14} />
+      </button>
     </button>
   );
 }
 
 export function RoomPanel() {
   const { selectedRoom, selectedAgent, agents, selectRoom, selectAgent } = useOfficeStore();
+  const { openOrCreate, setActive } = useChatStore();
+  const { current: workspace } = useWorkspaceStore();
+
+  const handleChat = async (agent: AgentData) => {
+    if (!workspace) return;
+    const convId = await openOrCreate(agent.id, workspace.id);
+    setActive(convId);
+    // Trigger chat panel open via custom event
+    window.dispatchEvent(new CustomEvent("open-chat"));
+  };
 
   if (!selectedRoom && !selectedAgent) return null;
 
   const roomAgents = agents.filter((a) => a.room_id === selectedRoom?.id);
 
   return (
-    <div className="absolute right-4 top-4 bottom-4 w-72 flex flex-col gap-3 animate-slide-up">
+    <div className="absolute right-4 top-4 bottom-4 w-72 flex flex-col gap-3 animate-slide-up pointer-events-none">
       {/* Room info */}
       {selectedRoom && (
-        <div className="rounded-2xl border border-white/10 bg-black/60 p-5 backdrop-blur-xl">
+        <div className="rounded-2xl border border-white/10 bg-black/60 p-5 backdrop-blur-xl pointer-events-auto">
           <div className="flex items-start justify-between mb-4">
             <div>
               <div className="text-2xl mb-1">{selectedRoom.config.emoji ?? "🏠"}</div>
@@ -78,20 +100,22 @@ export function RoomPanel() {
             </div>
           </div>
 
-          {roomAgents.length > 0 && (
+          {roomAgents.length > 0 ? (
             <div className="flex flex-col gap-2">
               <p className="text-xs font-medium text-white/40 uppercase tracking-wider">Agents in room</p>
               {roomAgents.map((agent) => (
-                <AgentCard key={agent.id} agent={agent} onClick={() => selectAgent(agent)} />
+                <AgentCard
+                  key={agent.id}
+                  agent={agent}
+                  onClick={() => selectAgent(agent)}
+                  onChat={() => handleChat(agent)}
+                />
               ))}
             </div>
-          )}
-
-          {roomAgents.length === 0 && (
+          ) : (
             <div className="flex flex-col items-center gap-2 py-4 text-center">
               <Bot size={24} className="text-white/20" />
               <p className="text-xs text-white/30">No agents assigned yet</p>
-              <Button size="sm" variant="outline" className="mt-1">+ Add Agent</Button>
             </div>
           )}
         </div>
@@ -99,16 +123,11 @@ export function RoomPanel() {
 
       {/* Agent detail */}
       {selectedAgent && (
-        <div className="rounded-2xl border border-white/10 bg-black/60 p-5 backdrop-blur-xl">
+        <div className="rounded-2xl border border-white/10 bg-black/60 p-5 backdrop-blur-xl pointer-events-auto">
           <div className="flex items-start justify-between mb-4">
             <div className="flex items-center gap-3">
               <div className="flex h-12 w-12 items-center justify-center rounded-full bg-white/10 text-2xl">
-                {selectedAgent.agent_type === "dev" ? "💻" :
-                 selectedAgent.agent_type === "dba" ? "🗄️" :
-                 selectedAgent.agent_type === "qa" ? "🔍" :
-                 selectedAgent.agent_type === "rag" ? "📚" :
-                 selectedAgent.agent_type === "ba" ? "📊" :
-                 selectedAgent.agent_type === "ceo" ? "👔" : "🤖"}
+                {AGENT_EMOJI[selectedAgent.agent_type] ?? "🤖"}
               </div>
               <div>
                 <h3 className="text-sm font-semibold text-white">{selectedAgent.name}</h3>
@@ -123,7 +142,11 @@ export function RoomPanel() {
             </button>
           </div>
 
-          <Button size="md" className="w-full gap-2">
+          <Button
+            size="md"
+            className="w-full gap-2"
+            onClick={() => handleChat(selectedAgent)}
+          >
             <MessageSquare size={14} />
             Chat with {selectedAgent.name}
           </Button>
