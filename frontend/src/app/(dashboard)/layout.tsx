@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuthStore } from "@/store/auth";
+import { useWorkspaceStore } from "@/store/workspace";
 import { Sidebar } from "@/components/layout/sidebar";
 import { ChatPanel } from "@/components/chat/ChatPanel";
 import { NotificationStack } from "@/components/notifications/NotificationStack";
@@ -14,9 +15,15 @@ import { cn } from "@/lib/utils";
 function DashboardShell({ children }: { children: React.ReactNode }) {
   const [chatOpen, setChatOpen] = useState(false);
   const { conversations } = useChatStore();
+  const { fetch: fetchWorkspaces, current } = useWorkspaceStore();
   const unread = conversations.filter((c) => c.status === "active").length;
 
-  // Listen for chat open requests from RoomPanel / anywhere
+  // Fetch workspaces once on mount
+  useEffect(() => {
+    fetchWorkspaces();
+  }, [fetchWorkspaces]);
+
+  // Listen for chat open requests from RoomPanel
   useEffect(() => {
     const handler = () => setChatOpen(true);
     window.addEventListener("open-chat", handler);

@@ -1,54 +1,69 @@
 "use client";
 
-import { useEffect } from "react";
-import dynamic from "next/dynamic";
+import { useEffect, useState } from "react";
 import { useWorkspaceStore } from "@/store/workspace";
 import { useOfficeStore } from "@/store/office";
-import { RoomPanel } from "@/components/office/RoomPanel";
-import { OfficeToolbar } from "@/components/office/OfficeToolbar";
-
-const OfficeScene = dynamic(
-  () => import("@/components/office/OfficeScene").then((m) => m.OfficeScene),
-  { ssr: false }
-);
+import { OfficeMap } from "@/components/office2d/OfficeMap";
 
 export default function OfficePage() {
-  const current = useWorkspaceStore((s) => s.current);
-  const { fetchOffice, fetchAgents, loading } = useOfficeStore();
+  const { current, workspaces, loading: wsLoading } = useWorkspaceStore();
+  const { fetchOffice, fetchAgents, loading, office, agents } = useOfficeStore();
+  const [initialized, setInitialized] = useState(false);
 
   useEffect(() => {
-    if (!current) return;
+    if (!current || initialized) return;
+    setInitialized(true);
     fetchOffice(current.id);
     fetchAgents(current.id);
-  }, [current, fetchOffice, fetchAgents]);
+  }, [current, initialized, fetchOffice, fetchAgents]);
 
-  // Poll agent statuses every 10s
   useEffect(() => {
     if (!current) return;
-    const timer = setInterval(() => fetchAgents(current.id), 10_000);
+    const timer = setInterval(() => fetchAgents(current.id), 15_000);
     return () => clearInterval(timer);
   }, [current, fetchAgents]);
 
+  // No workspace
+  if (!wsLoading && workspaces.length === 0) {
+    return (
+      <div className="flex h-full items-center justify-center">
+        <div className="text-center">
+          <div className="text-5xl mb-4">🏢</div>
+          <p className="text-white font-semibold text-lg mb-2">ยังไม่มี Workspace</p>
+          <p className="text-white/40 text-sm">สร้าง workspace ก่อนเพื่อเข้าใช้งาน office</p>
+        </div>
+      </div>
+    );
+  }
+
+  const isLoading = wsLoading || loading || (!office && !!current);
+
   return (
     <div className="-m-6 h-screen relative overflow-hidden">
-      <div className="absolute inset-0">
-        <OfficeScene />
-      </div>
-
-      {loading && (
-        <div className="absolute inset-0 flex items-center justify-center bg-black/60 backdrop-blur-sm z-10">
-          <div className="flex flex-col items-center gap-3">
-            <div className="h-10 w-10 rounded-full border-2 border-primary-500 border-t-transparent animate-spin" />
-            <p className="text-sm text-white/60">Loading office...</p>
+      {isLoading ? (
+        <div className="absolute inset-0 flex items-center justify-center bg-[#050510]">
+          <div className="flex flex-col items-center gap-4">
+            <div className="relative h-16 w-16">
+              <div className="absolute inset-0 rounded-full border-2 border-primary-500/20" />
+              <div className="absolute inset-0 rounded-full border-2 border-primary-500 border-t-transparent animate-spin" />
+              <div className="absolute inset-2 rounded-full border border-primary-400/30 border-b-transparent animate-spin" style={{ animationDirection: "reverse", animationDuration: "0.8s" }} />
+            </div>
+            <div className="text-center">
+              <p className="text-sm font-semibold text-white">Loading AI Office</p>
+              <p className="text-xs text-white/40 mt-1">Initializing workspace...</p>
+            </div>
           </div>
         </div>
-      )}
-
-      {!loading && (
-        <>
-          <OfficeToolbar />
-          <RoomPanel />
-        </>
+      ) : office ? (
+        <OfficeMap office={office} agents={agents} />
+      ) : (
+        <div className="absolute inset-0 flex items-center justify-center bg-[#050510]">
+          <div className="text-center">
+            <div className="text-4xl mb-3">🏢</div>
+            <p className="text-white font-semibold">ยังไม่มี Office</p>
+            <p className="text-white/40 text-xs mt-1">Office จะถูกสร้างอัตโนมัติเมื่อเข้า workspace</p>
+          </div>
+        </div>
       )}
     </div>
   );
