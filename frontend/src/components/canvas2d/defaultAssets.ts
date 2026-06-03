@@ -39,4 +39,4 @@ export const DEFAULT_FURNITURE: FurnitureItem[] = [
   { id: "f11",label: "Whiteboard",  imageUrl: `${A}/furniture/whiteboard.png`,  x: 300, y: 50,  width: 120, height: 80,  emoji: "📋" },
 ];
 
-export const DEFAULT_BACKGROUND = `${A}/maps/office_full.png`;
+export const DEFAULT_BACKGROUND = `${A}/maps/rooftop_terrace.png`;
