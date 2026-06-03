@@ -190,12 +190,12 @@ export function drawAgent(ctx: CanvasRenderingContext2D, agent: AgentGameState, 
     const img = getImage(agent.sprite.url);
     if (img) {
       const cols = agent.sprite.cols || 1;
+      const rows = agent.sprite.rows || 1;
       // Derive frame size from the image when not explicitly set (frameW/H = 0)
       const fw = agent.sprite.frameW || Math.floor(img.naturalWidth / cols);
-      const totalRows = Math.max(1, Math.round(img.naturalHeight / (agent.sprite.frameH || img.naturalHeight)));
-      const fh = agent.sprite.frameH || Math.floor(img.naturalHeight / totalRows);
+      const fh = agent.sprite.frameH || Math.floor(img.naturalHeight / rows);
       // Clamp direction row to rows the sheet actually has (single-row → always 0)
-      const row = Math.min(DIRECTION_ROW[agent.direction], totalRows - 1);
+      const row = Math.min(DIRECTION_ROW[agent.direction], rows - 1);
       const col = agent.walking ? (agent.walkFrame % cols) : Math.min(1, cols - 1);
       // Preserve aspect ratio: scale frame to fit AGENT_H, center horizontally
       const aspect = fw / fh;

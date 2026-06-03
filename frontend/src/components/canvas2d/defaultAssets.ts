@@ -2,22 +2,22 @@ import type { SpriteConfig, FurnitureItem } from "./types";
 
 const A = "/assets";
 
-// Chibi characters are single full-body poses (cols=1, rows=1) → static
-// sprite that slides while walking. frameW/H = 0 → derived from the image.
-function charSprite(file: string): SpriteConfig {
-  return { url: `${A}/characters/${file}`, frameW: 0, frameH: 0, cols: 1, rows: 1 };
+// 4-direction walk sheets: 2 frames (cols) x 4 directions (rows),
+// row order down/left/right/up. frameW/H = 0 → derived from the image.
+function walkSprite(file: string): SpriteConfig {
+  return { url: `${A}/characters/${file}`, frameW: 0, frameH: 0, cols: 2, rows: 4 };
 }
 
-// Map agent_type → chibi character sprite
+// Map agent_type → walking character sprite
 export const DEFAULT_AGENT_SPRITES: Record<string, SpriteConfig> = {
-  reception: charSprite("char_blonde_girl.png"),
-  ceo:       charSprite("char_blonde_boy.png"),
-  pm:        charSprite("char_headset_boy.png"),
-  ba:        charSprite("char_pink.png"),
-  dev:       charSprite("char_brown_boy.png"),
-  dba:       charSprite("char_purple_girl.png"),
-  qa:        charSprite("char_catgirl.png"),
-  rag:       charSprite("char_teal_girl.png"),
+  reception: walkSprite("walk_girl_headphone.png"),
+  ceo:       walkSprite("walk_boy_blonde.png"),
+  pm:        walkSprite("walk_boy_cap.png"),
+  ba:        walkSprite("walk_girl_pink.png"),
+  dev:       walkSprite("walk_boy_brown.png"),
+  dba:       walkSprite("walk_girl_purple.png"),
+  qa:        walkSprite("walk_girl_brown.png"),
+  rag:       walkSprite("walk_boy_green.png"),
 };
 
 export function defaultSpriteFor(agentType: string): SpriteConfig | null {
