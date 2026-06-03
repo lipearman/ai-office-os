@@ -2,22 +2,22 @@ import type { SpriteConfig, FurnitureItem } from "./types";
 
 const A = "/assets";
 
-// Each extracted character image holds 3 side-by-side poses → 3-frame, 1 row.
-// frameW/frameH = 0 means "derive from the loaded image" (engine computes).
+// Chibi characters are single full-body poses (cols=1, rows=1) → static
+// sprite that slides while walking. frameW/H = 0 → derived from the image.
 function charSprite(file: string): SpriteConfig {
-  return { url: `${A}/characters/${file}`, frameW: 0, frameH: 0, cols: 3, rows: 1 };
+  return { url: `${A}/characters/${file}`, frameW: 0, frameH: 0, cols: 1, rows: 1 };
 }
 
-// Map agent_type → extracted character sprite
+// Map agent_type → chibi character sprite
 export const DEFAULT_AGENT_SPRITES: Record<string, SpriteConfig> = {
-  reception: charSprite("npc_female.png"),
-  ceo:       charSprite("ceo_agent.png"),
-  pm:        charSprite("pm_agent.png"),
-  ba:        charSprite("ba_agent.png"),
-  dev:       charSprite("dev_agent.png"),
-  dba:       charSprite("dba_agent.png"),
-  qa:        charSprite("qa_agent.png"),
-  rag:       charSprite("rag_agent.png"),
+  reception: charSprite("char_blonde_girl.png"),
+  ceo:       charSprite("char_blonde_boy.png"),
+  pm:        charSprite("char_headset_boy.png"),
+  ba:        charSprite("char_pink.png"),
+  dev:       charSprite("char_brown_boy.png"),
+  dba:       charSprite("char_purple_girl.png"),
+  qa:        charSprite("char_catgirl.png"),
+  rag:       charSprite("char_teal_girl.png"),
 };
 
 export function defaultSpriteFor(agentType: string): SpriteConfig | null {

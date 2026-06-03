@@ -2,8 +2,8 @@ import type { AgentGameState, FurnitureItem, SpriteConfig, Direction } from "./t
 
 export const AGENT_SPEED = 90; // px/sec
 export const WALK_FPS    = 8;  // sprite animation FPS
-export const AGENT_W     = 48;
-export const AGENT_H     = 64;
+export const AGENT_W     = 64;
+export const AGENT_H     = 96;
 
 const DIRECTION_ROW: Record<Direction, number> = {
   down: 0, left: 1, right: 2, up: 3,
