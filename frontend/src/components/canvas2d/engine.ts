@@ -55,7 +55,14 @@ export function makeAgentState(
   };
 }
 
-export function updateAgent(agent: AgentGameState, dt: number): AgentGameState {
+// Foot point of an agent placed at (x, y) top-left
+export function footOf(x: number, y: number) {
+  return { fx: x + AGENT_W / 2, fy: y + AGENT_H - 4 };
+}
+
+export type WalkTest = (footX: number, footY: number) => boolean;
+
+export function updateAgent(agent: AgentGameState, dt: number, canWalk?: WalkTest): AgentGameState {
   const dx = agent.targetX - agent.x;
   const dy = agent.targetY - agent.y;
   const dist = Math.sqrt(dx * dx + dy * dy);
@@ -65,15 +72,38 @@ export function updateAgent(agent: AgentGameState, dt: number): AgentGameState {
   }
 
   const step = AGENT_SPEED * dt;
-  const nx = agent.x + (dx / dist) * Math.min(step, dist);
-  const ny = agent.y + (dy / dist) * Math.min(step, dist);
+  const mvx = (dx / dist) * Math.min(step, dist);
+  const mvy = (dy / dist) * Math.min(step, dist);
 
-  // Direction
-  let direction: Direction = agent.direction;
-  if (Math.abs(dx) > Math.abs(dy)) {
-    direction = dx > 0 ? "right" : "left";
+  // Collision: try full move, then slide along X only, then Y only
+  let nx = agent.x;
+  let ny = agent.y;
+  if (!canWalk) {
+    nx = agent.x + mvx; ny = agent.y + mvy;
   } else {
-    direction = dy > 0 ? "down" : "up";
+    const full = footOf(agent.x + mvx, agent.y + mvy);
+    if (canWalk(full.fx, full.fy)) {
+      nx = agent.x + mvx; ny = agent.y + mvy;
+    } else {
+      const sx = footOf(agent.x + mvx, agent.y);
+      const sy = footOf(agent.x, agent.y + mvy);
+      if (canWalk(sx.fx, sx.fy)) { nx = agent.x + mvx; }
+      else if (canWalk(sy.fx, sy.fy)) { ny = agent.y + mvy; }
+      else {
+        // Fully blocked — stop here
+        return { ...agent, walking: false, walkFrame: 1, targetX: agent.x, targetY: agent.y };
+      }
+    }
+  }
+
+  // Direction (from actual motion)
+  const adx = nx - agent.x;
+  const ady = ny - agent.y;
+  let direction: Direction = agent.direction;
+  if (Math.abs(adx) > Math.abs(ady)) {
+    direction = adx >= 0 ? "right" : "left";
+  } else if (Math.abs(ady) > 0.001) {
+    direction = ady > 0 ? "down" : "up";
   }
 
   // Walk frame cycling
@@ -86,6 +116,55 @@ export function updateAgent(agent: AgentGameState, dt: number): AgentGameState {
   }
 
   return { ...agent, x: nx, y: ny, direction, walking: true, walkFrame, frameTimer };
+}
+
+// ── Collision map (sampled from the background image) ───────────────────────
+
+const WALL_BRIGHTNESS = 70; // pixel walkable if max(r,g,b) > this
+
+export class CollisionMap {
+  private data: Uint8ClampedArray | null = null;
+  private w = 0;
+  private h = 0;
+
+  /** Build from the background image, replicating the cover/contain/fill draw. */
+  build(img: HTMLImageElement | null, fit: string, W: number, H: number) {
+    this.w = W; this.h = H;
+    if (!img || W === 0 || H === 0) { this.data = null; return; }
+    const off = document.createElement("canvas");
+    off.width = W; off.height = H;
+    const ctx = off.getContext("2d", { willReadFrequently: true })!;
+
+    const iw = img.naturalWidth, ih = img.naturalHeight;
+    let dx = 0, dy = 0, dw = W, dh = H;
+    if (fit === "cover") {
+      const s = Math.max(W / iw, H / ih);
+      dw = iw * s; dh = ih * s; dx = (W - dw) / 2; dy = (H - dh) / 2;
+    } else if (fit === "contain") {
+      const s = Math.min(W / iw, H / ih);
+      dw = iw * s; dh = ih * s; dx = (W - dw) / 2; dy = (H - dh) / 2;
+    }
+    if (fit === "tile") {
+      const pat = ctx.createPattern(img, "repeat");
+      if (pat) { ctx.fillStyle = pat; ctx.fillRect(0, 0, W, H); }
+    } else {
+      ctx.drawImage(img, dx, dy, dw, dh);
+    }
+    try {
+      this.data = ctx.getImageData(0, 0, W, H).data;
+    } catch {
+      this.data = null; // cross-origin taint — fall back to no collision
+    }
+  }
+
+  isWalkable(x: number, y: number): boolean {
+    if (!this.data) return true;            // no map → everywhere walkable
+    const ix = Math.floor(x), iy = Math.floor(y);
+    if (ix < 0 || iy < 0 || ix >= this.w || iy >= this.h) return false; // off-canvas
+    const i = (iy * this.w + ix) * 4;
+    const r = this.data[i], g = this.data[i + 1], b = this.data[i + 2];
+    return Math.max(r, g, b) > WALL_BRIGHTNESS;
+  }
 }
 
 // ── Draw helpers ───────────────────────────────────────────────────────────

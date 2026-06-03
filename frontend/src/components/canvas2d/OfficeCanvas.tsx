@@ -6,7 +6,8 @@ import type { AgentGameState, FurnitureItem } from "./types";
 import {
   makeAgentState, updateAgent,
   drawBackground, drawFurniture, drawAgent,
-  loadImage, AGENT_W, AGENT_H,
+  loadImage, getImage, AGENT_W, AGENT_H,
+  CollisionMap, footOf,
 } from "./engine";
 import { useOfficeGameStore } from "@/store/officeGame";
 import { defaultSpriteFor } from "./defaultAssets";
@@ -34,6 +35,8 @@ export const OfficeCanvas = forwardRef<OfficeCanvasHandle, Props>(function Offic
   const lastRef   = useRef<number>(0);
   const dragRef   = useRef<{ id: string; ox: number; oy: number } | null>(null);
   const wanderRef = useRef<number>(0);
+  const collisionRef = useRef(new CollisionMap());
+  const collisionDirty = useRef(true);
 
   const selectedIdRef = useRef(selectedAgentId);
   selectedIdRef.current = selectedAgentId;
@@ -60,7 +63,8 @@ export const OfficeCanvas = forwardRef<OfficeCanvasHandle, Props>(function Offic
 
   // Preload images
   useEffect(() => {
-    if (backgroundUrl) loadImage(backgroundUrl).catch(() => {});
+    if (backgroundUrl) loadImage(backgroundUrl).then(() => { collisionDirty.current = true; }).catch(() => {});
+    collisionDirty.current = true;
     furniture.forEach((f) => f.imageUrl && loadImage(f.imageUrl).catch(() => {}));
     Object.values(agentSprites).forEach((s) => s?.url && loadImage(s.url).catch(() => {}));
     // Default character sprites
@@ -95,10 +99,19 @@ export const OfficeCanvas = forwardRef<OfficeCanvasHandle, Props>(function Offic
       if (canvas.width !== Math.floor(rect.width) || canvas.height !== Math.floor(rect.height)) {
         canvas.width = Math.floor(rect.width);
         canvas.height = Math.floor(rect.height);
+        collisionDirty.current = true;
       }
       const W = canvas.width, H = canvas.height;
 
-      // Idle wander
+      // Rebuild collision map when needed
+      if (collisionDirty.current && W > 0 && H > 0) {
+        const bgImg = backgroundUrl ? getImage(backgroundUrl) : null;
+        collisionRef.current.build(bgImg, backgroundFit, W, H);
+        collisionDirty.current = false;
+      }
+      const canWalk = (fx: number, fy: number) => collisionRef.current.isWalkable(fx, fy);
+
+      // Idle wander — only pick walkable targets
       wanderRef.current += dt;
       if (wanderRef.current > 3 && !editorRef.current) {
         wanderRef.current = 0;
@@ -106,8 +119,12 @@ export const OfficeCanvas = forwardRef<OfficeCanvasHandle, Props>(function Offic
           if (a.id === selectedIdRef.current) continue;
           if (a.status === "BUSY" || a.status === "busy") continue;
           if (Math.random() > 0.5 && !a.walking) {
-            a.targetX = Math.max(40, Math.min(W - AGENT_W - 40, a.x + (Math.random() - 0.5) * 220));
-            a.targetY = Math.max(80, Math.min(H - AGENT_H - 20, a.y + (Math.random() - 0.5) * 160));
+            for (let tries = 0; tries < 8; tries++) {
+              const tx = Math.max(20, Math.min(W - AGENT_W - 20, a.x + (Math.random() - 0.5) * 220));
+              const ty = Math.max(40, Math.min(H - AGENT_H - 10, a.y + (Math.random() - 0.5) * 160));
+              const f = footOf(tx, ty);
+              if (canWalk(f.fx, f.fy)) { a.targetX = tx; a.targetY = ty; break; }
+            }
           }
         }
       }
@@ -119,7 +136,7 @@ export const OfficeCanvas = forwardRef<OfficeCanvasHandle, Props>(function Offic
       for (const item of fSorted) drawFurniture(ctx, item, selectedFurnitureId === item.id);
 
       for (let i = 0; i < agentsRef.current.length; i++) {
-        agentsRef.current[i] = updateAgent(agentsRef.current[i], dt);
+        agentsRef.current[i] = updateAgent(agentsRef.current[i], dt, canWalk);
       }
       const aSorted = [...agentsRef.current].sort((a, b) => a.y - b.y);
       for (const agent of aSorted) {
