@@ -44,6 +44,7 @@ export const useAuthStore = create<AuthState>()(
       },
 
       logout: () => {
+        import("@/hooks/useWebSocket").then(({ wsManager }) => wsManager.disconnect());
         localStorage.removeItem("access_token");
         localStorage.removeItem("refresh_token");
         set({ user: null, access_token: null, refresh_token: null, isAuthenticated: false });

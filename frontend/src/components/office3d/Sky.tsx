@@ -1,28 +1,28 @@
 "use client";
 
-import { useRef } from "react";
+import { useRef, useMemo } from "react";
 import { useFrame } from "@react-three/fiber";
+import { Sky as DreiSky } from "@react-three/drei";
 import * as THREE from "three";
 
-function Cloud({ position }: { position: [number, number, number] }) {
+function Cloud({ position, speed = 0.2 }: { position: [number, number, number]; speed?: number }) {
   const ref = useRef<THREE.Group>(null);
-  useFrame((_, dt) => { if (ref.current) ref.current.position.x += dt * 0.3; });
+  useFrame((_, dt) => {
+    if (ref.current) {
+      ref.current.position.x += dt * speed;
+      if (ref.current.position.x > 50) ref.current.position.x = -50;
+    }
+  });
 
   return (
     <group ref={ref} position={position}>
-      {[
-        [0, 0, 0, 2.0, 1.0],
-        [1.5, 0.3, 0, 1.5, 0.8],
-        [-1.4, 0.2, 0, 1.2, 0.7],
-        [0, 0.6, 0, 1.2, 0.7],
-      ].map(([x, y, z, rx, ry], i) => (
-        <mesh key={i} position={[x as number, y as number, z as number]}>
-          <sphereGeometry args={[1, 8, 6]} />
-          <meshStandardMaterial
-            color="#ffffff"
-            transparent opacity={0.9}
-            roughness={1} metalness={0}
-          />
+      {([
+        [0, 0, 0, 2.2], [1.6, 0.3, 0, 1.6], [-1.5, 0.2, 0, 1.3],
+        [0.2, 0.7, 0, 1.3], [-0.5, -0.2, 0.5, 1.0],
+      ] as [number, number, number, number][]).map(([x, y, z, r], i) => (
+        <mesh key={i} position={[x, y, z]}>
+          <sphereGeometry args={[r, 8, 6]} />
+          <meshStandardMaterial color="#ffffff" roughness={1} transparent opacity={0.88} />
         </mesh>
       ))}
     </group>
@@ -30,55 +30,37 @@ function Cloud({ position }: { position: [number, number, number] }) {
 }
 
 export function Sky() {
+  const buildings = useMemo(() => [
+    [-35, 14, -38, 3], [-28, 10, -38, 4], [-22, 18, -38, 3.5],
+    [-15, 8,  -38, 2.5], [-10, 12, -38, 4], [-4, 16, -38, 3],
+    [2,   9,  -38, 5],  [8,  20, -38, 3],  [14, 13, -38, 4],
+    [20,  11, -38, 3],  [26, 15, -38, 5],  [32,  8, -38, 3],
+    [38,  18, -38, 4],
+  ], []);
+
   return (
     <group>
-      {/* Sky dome */}
-      <mesh>
-        <sphereGeometry args={[80, 32, 16]} />
-        <meshBasicMaterial side={THREE.BackSide}>
-          <primitive
-            object={(() => {
-              const c = document.createElement("canvas");
-              c.width = 2; c.height = 512;
-              const ctx = c.getContext("2d")!;
-              const g = ctx.createLinearGradient(0, 0, 0, 512);
-              g.addColorStop(0, "#5B9BD5");
-              g.addColorStop(0.5, "#87CEEB");
-              g.addColorStop(1, "#C9E8F5");
-              ctx.fillStyle = g;
-              ctx.fillRect(0, 0, 2, 512);
-              return new THREE.CanvasTexture(c);
-            })()}
-            attach="map"
-          />
-        </meshBasicMaterial>
-      </mesh>
+      {/* Drei procedural sky — no canvas texture needed */}
+      <DreiSky
+        distance={80}
+        sunPosition={[100, 50, 100]}
+        inclination={0.49}
+        azimuth={0.25}
+        turbidity={6}
+        rayleigh={0.5}
+      />
 
-      {/* Clouds */}
-      <Cloud position={[-20, 22, -40]} />
-      <Cloud position={[15, 25, -50]} />
-      <Cloud position={[-5, 20, -35]} />
-      <Cloud position={[30, 24, -45]} />
+      {/* Moving clouds */}
+      <Cloud position={[-20, 22, -40]} speed={0.15} />
+      <Cloud position={[15,  25, -50]} speed={0.10} />
+      <Cloud position={[-5,  20, -35]} speed={0.20} />
+      <Cloud position={[30,  24, -45]} speed={0.08} />
 
       {/* City skyline silhouette */}
-      {[
-        [-35, 0, -38, 3, 14],
-        [-28, 0, -38, 4, 10],
-        [-22, 0, -38, 3.5, 18],
-        [-15, 0, -38, 2.5, 8],
-        [-10, 0, -38, 4, 12],
-        [-4, 0, -38, 3, 16],
-        [2, 0, -38, 5, 9],
-        [8, 0, -38, 3, 20],
-        [14, 0, -38, 4, 13],
-        [20, 0, -38, 3, 11],
-        [26, 0, -38, 5, 15],
-        [32, 0, -38, 3, 8],
-        [38, 0, -38, 4, 18],
-      ].map(([x, y, z, w, h], i) => (
-        <mesh key={i} position={[x, (h / 2) - 6, z]}>
-          <boxGeometry args={[w, h, 2]} />
-          <meshStandardMaterial color={i % 3 === 0 ? "#7A8FA6" : i % 3 === 1 ? "#8C9DAB" : "#6B7E8F"} />
+      {buildings.map(([x, h, z, w], i) => (
+        <mesh key={i} position={[x, (h as number) / 2 - 8, z as number]}>
+          <boxGeometry args={[w as number, h as number, 1.5]} />
+          <meshStandardMaterial color={["#7A8FA6", "#8C9DAB", "#6B7E8F"][i % 3]} roughness={0.8} />
         </mesh>
       ))}
     </group>

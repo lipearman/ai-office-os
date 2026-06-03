@@ -246,7 +246,6 @@ export function Plant({ position, size = 1.0 }: {
             position={[Math.sin(rad) * 0.3, 0.7 + alt, Math.cos(rad) * 0.3]}
             rotation={[0.4, rad, 0.2]}
           >
-            <ellipsisGeometry />
             <boxGeometry args={[0.35, 0.03, 0.2]} />
             <meshStandardMaterial
               color={i % 2 === 0 ? "#22C55E" : "#16A34A"}
@@ -462,5 +461,3 @@ export function StorageBox({ position, stack = 1 }: {
   );
 }
 
-// Helper geometry (ellipsis is not a thing in R3F, using plane instead)
-function ellipsisGeometry() { return null; }

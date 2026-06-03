@@ -1,11 +1,13 @@
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
+from pathlib import Path
 from app.core.config import settings
 from app.core.database import init_db
 from app.core.redis import close_redis
-from app.api.v1 import auth, workspaces, health, offices, agents, conversations, seed
+from app.api.v1 import auth, workspaces, health, offices, agents, conversations, seed, uploads
 from app.websocket.router import router as ws_router
 import structlog
 import traceback
@@ -56,4 +58,9 @@ app.include_router(offices.router,        prefix="/api/v1")
 app.include_router(agents.router,         prefix="/api/v1")
 app.include_router(conversations.router,  prefix="/api/v1")
 app.include_router(seed.router,           prefix="/api/v1")
+app.include_router(uploads.router,        prefix="/api/v1")
 app.include_router(ws_router)
+
+# Serve uploaded files
+Path("uploads").mkdir(exist_ok=True)
+app.mount("/static/uploads", StaticFiles(directory="uploads"), name="uploads")

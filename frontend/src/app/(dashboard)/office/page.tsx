@@ -6,19 +6,19 @@ import { useWorkspaceStore } from "@/store/workspace";
 import { useOfficeStore } from "@/store/office";
 
 const OfficeView = dynamic(
-  () => import("@/components/office3d/OfficeView"),
+  () => import("@/components/canvas2d/OfficeView2D"),
   { ssr: false, loading: () => <LoadingScreen /> }
 );
 
 function LoadingScreen() {
   return (
-    <div className="flex h-full items-center justify-center" style={{ background: "#87CEEB" }}>
+    <div className="flex h-full items-center justify-center bg-[#0a0a1a]">
       <div className="flex flex-col items-center gap-4">
         <div className="relative h-16 w-16">
-          <div className="absolute inset-0 rounded-full border-2 border-blue-400/40" />
-          <div className="absolute inset-0 rounded-full border-2 border-blue-400 border-t-transparent animate-spin" />
+          <div className="absolute inset-0 rounded-full border-2 border-primary-500/20" />
+          <div className="absolute inset-0 rounded-full border-2 border-primary-500 border-t-transparent animate-spin" />
         </div>
-        <p className="text-sm font-semibold text-blue-900">Loading AI Office...</p>
+        <p className="text-sm font-semibold text-white">Loading AI Office...</p>
       </div>
     </div>
   );
