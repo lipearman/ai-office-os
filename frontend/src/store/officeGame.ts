@@ -19,7 +19,7 @@ export const useOfficeGameStore = create<OfficeGameStore>()(
   persist(
     (set) => ({
       backgroundUrl: DEFAULT_BACKGROUND,
-      backgroundFit: "cover",
+      backgroundFit: "fill",
       furniture: DEFAULT_FURNITURE,
       agentSprites: {},
 
@@ -40,7 +40,7 @@ export const useOfficeGameStore = create<OfficeGameStore>()(
         set({ backgroundUrl: DEFAULT_BACKGROUND, backgroundFit: "cover", furniture: DEFAULT_FURNITURE, agentSprites: {} }),
     }),
     {
-      name: "office-game-config-v5",
+      name: "office-game-config-v6",
       partialize: (s) => ({
         backgroundFit: s.backgroundFit,
         backgroundUrl: isPersistable(s.backgroundUrl) ? s.backgroundUrl : DEFAULT_BACKGROUND,
