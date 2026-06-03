@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from app.core.config import settings
 from app.core.database import init_db
 from app.core.redis import close_redis
-from app.api.v1 import auth, workspaces, health
+from app.api.v1 import auth, workspaces, health, offices, agents
 from app.websocket.router import router as ws_router
 import structlog
 
@@ -36,10 +36,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# REST routes
 app.include_router(health.router, prefix="/api/v1")
 app.include_router(auth.router, prefix="/api/v1")
 app.include_router(workspaces.router, prefix="/api/v1")
-
-# WebSocket
+app.include_router(offices.router, prefix="/api/v1")
+app.include_router(agents.router, prefix="/api/v1")
 app.include_router(ws_router)
