@@ -189,11 +189,20 @@ export function drawAgent(ctx: CanvasRenderingContext2D, agent: AgentGameState, 
   if (agent.sprite) {
     const img = getImage(agent.sprite.url);
     if (img) {
-      const row = DIRECTION_ROW[agent.direction];
-      const col = agent.walking ? agent.walkFrame : 1; // frame 1 = idle
-      const fw  = agent.sprite.frameW;
-      const fh  = agent.sprite.frameH;
-      ctx.drawImage(img, col * fw, row * fh, fw, fh, cx, cy, w, h);
+      const cols = agent.sprite.cols || 1;
+      // Derive frame size from the image when not explicitly set (frameW/H = 0)
+      const fw = agent.sprite.frameW || Math.floor(img.naturalWidth / cols);
+      const totalRows = Math.max(1, Math.round(img.naturalHeight / (agent.sprite.frameH || img.naturalHeight)));
+      const fh = agent.sprite.frameH || Math.floor(img.naturalHeight / totalRows);
+      // Clamp direction row to rows the sheet actually has (single-row → always 0)
+      const row = Math.min(DIRECTION_ROW[agent.direction], totalRows - 1);
+      const col = agent.walking ? (agent.walkFrame % cols) : Math.min(1, cols - 1);
+      // Preserve aspect ratio: scale frame to fit AGENT_H, center horizontally
+      const aspect = fw / fh;
+      const dh = h;
+      const dw = dh * aspect;
+      const dx = cx + (w - dw) / 2;
+      ctx.drawImage(img, col * fw, row * fh, fw, fh, dx, cy, dw, dh);
     } else {
       drawFallbackAgent(ctx, agent, cx, cy, w, h);
     }

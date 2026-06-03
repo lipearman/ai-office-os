@@ -9,6 +9,7 @@ import {
   loadImage, AGENT_W, AGENT_H,
 } from "./engine";
 import { useOfficeGameStore } from "@/store/officeGame";
+import { defaultSpriteFor } from "./defaultAssets";
 
 interface Props {
   agents: AgentData[];
@@ -47,7 +48,7 @@ export const OfficeCanvas = forwardRef<OfficeCanvasHandle, Props>(function Offic
     const cw = canvasRef.current?.clientWidth  ?? 900;
     agentsRef.current = agents.map((a, idx) => {
       const prev = existing.get(a.id);
-      const sprite = agentSprites[a.id] ?? null;
+      const sprite = agentSprites[a.id] ?? defaultSpriteFor(a.agent_type);
       if (prev) return { ...prev, status: a.status, sprite, name: a.name };
       const cols = Math.ceil(Math.sqrt(Math.max(agents.length, 1)));
       const col = idx % cols, row = Math.floor(idx / cols);
@@ -62,7 +63,12 @@ export const OfficeCanvas = forwardRef<OfficeCanvasHandle, Props>(function Offic
     if (backgroundUrl) loadImage(backgroundUrl).catch(() => {});
     furniture.forEach((f) => f.imageUrl && loadImage(f.imageUrl).catch(() => {}));
     Object.values(agentSprites).forEach((s) => s?.url && loadImage(s.url).catch(() => {}));
-  }, [backgroundUrl, furniture, agentSprites]);
+    // Default character sprites
+    agents.forEach((a) => {
+      const sp = agentSprites[a.id] ?? defaultSpriteFor(a.agent_type);
+      if (sp?.url) loadImage(sp.url).catch(() => {});
+    });
+  }, [backgroundUrl, furniture, agentSprites, agents]);
 
   // Expose walk method
   useImperativeHandle(ref, () => ({
