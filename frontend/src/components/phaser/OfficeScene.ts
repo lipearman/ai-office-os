@@ -77,20 +77,24 @@ export class OfficeScene extends Phaser.Scene {
     this.bg = this.add.image(W / 2, H / 2, this.cfg.bgKey).setDisplaySize(W, H).setDepth(0);
     this.buildCollision();
 
-    // Animations per sprite per direction
+    // Animations per sprite per direction (defensive: clamp to real frame count)
     for (const s of this.cfg.sprites) {
+      const tex = this.textures.get(s.key);
+      // frameTotal includes the __BASE frame → real frames = frameTotal - 1
+      const realFrames = Math.max(0, (tex?.frameTotal ?? 1) - 1);
       for (const dir of ["down", "left", "right", "up"] as Dir[]) {
         const row = DIR_ROW[dir];
-        const start = row * s.cols;
-        const end = start + s.cols - 1;
+        let start = row * s.cols;
+        let end = start + s.cols - 1;
+        // Clamp to what the sheet actually has; fall back to frame 0
+        if (start > realFrames - 1) { start = 0; end = Math.max(0, realFrames - 1); }
+        else if (end > realFrames - 1) end = realFrames - 1;
+        const frames = realFrames > 0
+          ? this.anims.generateFrameNumbers(s.key, { start, end })
+          : [];
         const key = `${s.key}-${dir}`;
-        if (!this.anims.exists(key)) {
-          this.anims.create({
-            key,
-            frames: this.anims.generateFrameNumbers(s.key, { start, end }),
-            frameRate: 6,
-            repeat: -1,
-          });
+        if (frames.length > 0 && !this.anims.exists(key)) {
+          this.anims.create({ key, frames, frameRate: 6, repeat: -1 });
         }
       }
     }
@@ -205,7 +209,8 @@ export class OfficeScene extends Phaser.Scene {
     else { a.target = { x: a.sprite.x, y: a.sprite.y }; }
 
     a.sprite.setDepth(10 + a.sprite.y * 0.001);
-    a.sprite.anims.play(`${a.data.spriteKey}-${dir}`, true);
+    const animKey = `${a.data.spriteKey}-${dir}`;
+    if (this.anims.exists(animKey)) a.sprite.anims.play(animKey, true);
     this.syncLabel(a);
   }
 
