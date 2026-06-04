@@ -6,7 +6,7 @@ import { useWorkspaceStore } from "@/store/workspace";
 import { useOfficeStore } from "@/store/office";
 
 const OfficeView = dynamic(
-  () => import("@/components/canvas2d/OfficeView2D"),
+  () => import("@/components/phaser/PhaserOffice"),
   { ssr: false, loading: () => <LoadingScreen /> }
 );
 

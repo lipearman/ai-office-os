@@ -111,17 +111,17 @@ export const OfficeCanvas = forwardRef<OfficeCanvasHandle, Props>(function Offic
       }
       const canWalk = (fx: number, fy: number) => collisionRef.current.isWalkable(fx, fy);
 
-      // Idle wander — only pick walkable targets
+      // Idle wander — pick walkable targets (frequent, so turning is visible)
       wanderRef.current += dt;
-      if (wanderRef.current > 3 && !editorRef.current) {
+      if (wanderRef.current > 1.5 && !editorRef.current) {
         wanderRef.current = 0;
         for (const a of agentsRef.current) {
           if (a.id === selectedIdRef.current) continue;
           if (a.status === "BUSY" || a.status === "busy") continue;
-          if (Math.random() > 0.5 && !a.walking) {
-            for (let tries = 0; tries < 8; tries++) {
-              const tx = Math.max(20, Math.min(W - AGENT_W - 20, a.x + (Math.random() - 0.5) * 220));
-              const ty = Math.max(40, Math.min(H - AGENT_H - 10, a.y + (Math.random() - 0.5) * 160));
+          if (!a.walking) {
+            for (let tries = 0; tries < 12; tries++) {
+              const tx = Math.max(20, Math.min(W - AGENT_W - 20, a.x + (Math.random() - 0.5) * 260));
+              const ty = Math.max(40, Math.min(H - AGENT_H - 10, a.y + (Math.random() - 0.5) * 200));
               const f = footOf(tx, ty);
               if (canWalk(f.fx, f.fy)) { a.targetX = tx; a.targetY = ty; break; }
             }

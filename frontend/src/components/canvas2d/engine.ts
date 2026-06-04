@@ -9,6 +9,8 @@ const DIRECTION_ROW: Record<Direction, number> = {
   down: 0, left: 1, right: 2, up: 3,
 };
 
+const DEBUG_DIR = true;   // show direction label above each agent
+
 const AGENT_COLORS: Record<string, string> = {
   reception: "#6366f1", ceo: "#f59e0b", pm: "#f59e0b",
   ba: "#10b981", dev: "#3b82f6", dba: "#8b5cf6", qa: "#ef4444", rag: "#ec4899",
@@ -67,6 +69,13 @@ export function updateAgent(agent: AgentGameState, dt: number, canWalk?: WalkTes
   const dy = agent.targetY - agent.y;
   const dist = Math.sqrt(dx * dx + dy * dy);
 
+  // Direction from the TARGET (computed up-front so it always reflects intent)
+  let direction: Direction = agent.direction;
+  if (dist >= 2) {
+    if (Math.abs(dx) > Math.abs(dy)) direction = dx >= 0 ? "right" : "left";
+    else                              direction = dy >= 0 ? "down" : "up";
+  }
+
   if (dist < 2) {
     return { ...agent, walking: false, walkFrame: 1, x: agent.targetX, y: agent.targetY };
   }
@@ -90,20 +99,10 @@ export function updateAgent(agent: AgentGameState, dt: number, canWalk?: WalkTes
       if (canWalk(sx.fx, sx.fy)) { nx = agent.x + mvx; }
       else if (canWalk(sy.fx, sy.fy)) { ny = agent.y + mvy; }
       else {
-        // Fully blocked — stop here
-        return { ...agent, walking: false, walkFrame: 1, targetX: agent.x, targetY: agent.y };
+        // Fully blocked — keep facing intended direction, stop moving
+        return { ...agent, direction, walking: false, walkFrame: 1, targetX: agent.x, targetY: agent.y };
       }
     }
-  }
-
-  // Direction (from actual motion)
-  const adx = nx - agent.x;
-  const ady = ny - agent.y;
-  let direction: Direction = agent.direction;
-  if (Math.abs(adx) > Math.abs(ady)) {
-    direction = adx >= 0 ? "right" : "left";
-  } else if (Math.abs(ady) > 0.001) {
-    direction = ady > 0 ? "down" : "up";
   }
 
   // Walk frame cycling
@@ -312,6 +311,15 @@ export function drawAgent(ctx: CanvasRenderingContext2D, agent: AgentGameState, 
   ctx.textAlign = "left";
   ctx.textBaseline = "middle";
   ctx.fillText(name, tx + 6, ty + 9);
+
+  // DEBUG: direction + walking + distance-to-target
+  if (DEBUG_DIR) {
+    const d = Math.round(Math.hypot(agent.targetX - agent.x, agent.targetY - agent.y));
+    ctx.font = "bold 10px monospace";
+    ctx.fillStyle = "#00ff88";
+    ctx.textAlign = "center";
+    ctx.fillText(`${agent.direction}${agent.walking ? "*" : ""} d${d}`, cx + w / 2, ty - 6);
+  }
 
   // Busy dots
   if (agent.status === "BUSY" || agent.status === "busy") {
