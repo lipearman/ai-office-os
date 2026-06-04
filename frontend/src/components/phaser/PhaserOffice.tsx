@@ -6,9 +6,10 @@ import { useOfficeGameStore } from "@/store/officeGame";
 import { defaultSpriteFor } from "@/components/canvas2d/defaultAssets";
 import { useChatStore } from "@/store/chat";
 import { useWorkspaceStore } from "@/store/workspace";
+import { useImageUpload } from "@/components/canvas2d/useImageUpload";
 import { PhaserBus, PEVENTS } from "./eventBus";
-import type { SceneData, SpriteMeta, AgentSpawn } from "./OfficeScene";
-import { X, MessageSquare } from "lucide-react";
+import type { SceneData, SpriteMeta, AgentSpawn, FurnitureSpawn } from "./OfficeScene";
+import { X, MessageSquare, Pencil, Check, ImageIcon, Plus, Trash2 } from "lucide-react";
 
 const AGENT_COLORS: Record<string, string> = {
   reception: "#6366f1", ceo: "#f59e0b", pm: "#f59e0b",
@@ -19,6 +20,13 @@ const AGENT_EMOJI: Record<string, string> = {
   dev: "💻", dba: "🗄️", qa: "🔍", rag: "📚",
 };
 
+const FURNITURE_CATALOG = [
+  "desk", "computer", "chair", "sofa", "coffee_table", "plant", "bookshelf",
+  "cabinet", "locker", "vending_machine", "water_dispenser", "whiteboard",
+  "notice_board", "box", "door", "stairs",
+];
+const furnUrl = (n: string) => `/assets/furniture/${n}.png`;
+
 function loadDims(url: string): Promise<{ w: number; h: number }> {
   return new Promise((res) => {
     const img = new Image();
@@ -27,7 +35,6 @@ function loadDims(url: string): Promise<{ w: number; h: number }> {
     img.src = url;
   });
 }
-
 const keyOf = (url: string) => "tex_" + url.replace(/[^a-z0-9]/gi, "_");
 
 interface Props { agents: AgentData[]; officeName: string; }
@@ -36,33 +43,38 @@ export default function PhaserOffice({ agents, officeName }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const gameRef = useRef<any>(null);
   const sceneRef = useRef<any>(null);
+  const agentsRef = useRef(agents);
+  agentsRef.current = agents;
+
   const [selectedAgent, setSelectedAgent] = useState<AgentData | null>(null);
-  const { backgroundUrl, agentSprites } = useOfficeGameStore();
+  const [editor, setEditor] = useState(false);
+  const [uploadingBg, setUploadingBg] = useState(false);
+
+  const { backgroundUrl, agentSprites, furniture, addFurniture, updateFurniture, removeFurniture, setBackground } = useOfficeGameStore();
   const { openOrCreate, setActive } = useChatStore();
   const { current: workspace } = useWorkspaceStore();
+  const { upload } = useImageUpload();
 
-  // Boot Phaser once
+  // Build sprite metadata + boot Phaser (recreate when background changes)
   useEffect(() => {
-    if (!containerRef.current || gameRef.current) return;
+    if (!containerRef.current) return;
     let destroyed = false;
 
     (async () => {
       const Phaser = (await import("phaser")).default;
       const { OfficeScene } = await import("./OfficeScene");
 
-      // Build sprite metadata (need image dims for frame size)
       const bgUrl = backgroundUrl || "/assets/maps/office_floor.png";
       const spriteByUrl = new Map<string, SpriteMeta>();
       const agentSpawns: AgentSpawn[] = [];
 
-      for (const a of agents) {
+      for (const a of agentsRef.current) {
         const cfg = agentSprites[a.id] ?? defaultSpriteFor(a.agent_type);
         if (!cfg) continue;
         const key = keyOf(cfg.url);
         if (!spriteByUrl.has(cfg.url)) {
           const dims = await loadDims(cfg.url);
-          const cols = cfg.cols || 1;
-          const rows = cfg.rows || 1;
+          const cols = cfg.cols || 1, rows = cfg.rows || 1;
           spriteByUrl.set(cfg.url, {
             key, url: cfg.url,
             frameW: cfg.frameW || Math.floor(dims.w / cols),
@@ -76,28 +88,31 @@ export default function PhaserOffice({ agents, officeName }: Props) {
         });
       }
 
+      const furnitureSpawns: FurnitureSpawn[] = furniture
+        .filter((f) => f.imageUrl)
+        .map((f) => ({ id: f.id, url: f.imageUrl!, x: f.x, y: f.y, w: f.width, h: f.height }));
+
       if (destroyed) return;
 
       const sceneData: SceneData = {
         bgKey: keyOf(bgUrl), bgUrl,
         sprites: Array.from(spriteByUrl.values()),
-        agents: agentSpawns,
+        agents: agentSpawns, furniture: furnitureSpawns,
       };
 
       const game = new Phaser.Game({
-        type: Phaser.AUTO,
-        parent: containerRef.current!,
-        width: containerRef.current!.clientWidth,
-        height: containerRef.current!.clientHeight,
-        backgroundColor: "#0a0a1a",
-        pixelArt: true,
+        type: Phaser.AUTO, parent: containerRef.current!,
+        width: containerRef.current!.clientWidth, height: containerRef.current!.clientHeight,
+        backgroundColor: "#0a0a1a", pixelArt: true,
         scale: { mode: Phaser.Scale.RESIZE, autoCenter: Phaser.Scale.CENTER_BOTH },
         scene: [OfficeScene],
       });
       gameRef.current = game;
       game.scene.start("OfficeScene", sceneData);
-
-      PhaserBus.once(PEVENTS.READY, (scene: any) => { sceneRef.current = scene; });
+      PhaserBus.once(PEVENTS.READY, (scene: any) => {
+        sceneRef.current = scene;
+        scene.setEditorMode(editor);
+      });
     })();
 
     return () => {
@@ -107,22 +122,59 @@ export default function PhaserOffice({ agents, officeName }: Props) {
       sceneRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [backgroundUrl]);
 
-  // Agent click → open panel
+  // Agent click → panel
   useEffect(() => {
-    const h = (a: AgentSpawn) => {
-      const full = agents.find((x) => x.id === a.id) ?? null;
-      setSelectedAgent(full);
-    };
+    const h = (a: AgentSpawn) => setSelectedAgent(agentsRef.current.find((x) => x.id === a.id) ?? null);
     PhaserBus.on(PEVENTS.AGENT_CLICKED, h);
     return () => { PhaserBus.off(PEVENTS.AGENT_CLICKED, h); };
-  }, [agents]);
+  }, []);
 
-  // Push status updates to scene
+  // Furniture drag → persist
+  useEffect(() => {
+    const h = ({ id, x, y }: { id: string; x: number; y: number }) => updateFurniture(id, { x, y });
+    PhaserBus.on(PEVENTS.FURNITURE_MOVED, h);
+    return () => { PhaserBus.off(PEVENTS.FURNITURE_MOVED, h); };
+  }, [updateFurniture]);
+
+  // Sync furniture list → scene (live, no rebuild)
+  useEffect(() => {
+    const spawns: FurnitureSpawn[] = furniture
+      .filter((f) => f.imageUrl)
+      .map((f) => ({ id: f.id, url: f.imageUrl!, x: f.x, y: f.y, w: f.width, h: f.height }));
+    sceneRef.current?.syncFurniture?.(spawns);
+  }, [furniture]);
+
+  // Push status updates
   useEffect(() => {
     sceneRef.current?.updateAgentStatuses?.(agents.map((a) => ({ id: a.id, status: a.status })));
   }, [agents]);
+
+  const toggleEditor = () => {
+    const next = !editor;
+    setEditor(next);
+    sceneRef.current?.setEditorMode?.(next);
+  };
+
+  const addFurn = async (name: string) => {
+    const url = furnUrl(name);
+    const dims = await loadDims(url);
+    const ratio = dims.w && dims.h ? dims.w / dims.h : 1.4;
+    const h = 90;
+    addFurniture({
+      id: `f_${Date.now()}`, label: name, imageUrl: url,
+      x: 300, y: 300, width: Math.round(h * ratio), height: h, emoji: "🪑",
+    });
+  };
+
+  const uploadBg = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploadingBg(true);
+    try { setBackground(await upload(file), "fill"); }
+    finally { setUploadingBg(false); }
+  };
 
   const handleChat = useCallback(async () => {
     if (!selectedAgent || !workspace) return;
@@ -145,11 +197,68 @@ export default function PhaserOffice({ agents, officeName }: Props) {
         <span className="text-sm font-bold text-white">{officeName}</span>
         <div className="h-4 w-px bg-white/20" />
         <span className="text-xs text-white/60"><span className="text-green-400 font-bold">{online}</span>/{agents.length} online</span>
-        <span className="ml-auto text-[11px] text-white/30">คลิกตัวละคร → เลือก · คลิกพื้น → เดินไป</span>
+        {editor
+          ? <span className="ml-2 text-xs text-yellow-400 font-bold">✏️ Editor — ลากเฟอร์นิเจอร์เพื่อย้าย</span>
+          : <span className="ml-auto text-[11px] text-white/30">คลิกตัวละคร → คุย · คลิกพื้น → เดิน</span>}
       </div>
 
+      {/* Editor toggle */}
+      <button onClick={toggleEditor}
+        className={`absolute bottom-6 right-6 z-20 flex items-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold shadow-lg transition-all ${
+          editor ? "bg-green-500 text-black hover:bg-green-400" : "bg-white/10 border border-white/20 text-white hover:bg-white/15"}`}>
+        {editor ? <><Check size={15}/> เสร็จ</> : <><Pencil size={15}/> แก้ไข Office</>}
+      </button>
+
+      {/* Editor panel */}
+      {editor && (
+        <div className="absolute left-4 top-14 bottom-4 w-64 z-20 flex flex-col rounded-2xl border border-white/10 bg-black/85 backdrop-blur-xl overflow-hidden">
+          <div className="px-4 py-3 border-b border-white/8 flex items-center justify-between">
+            <span className="text-sm font-bold text-white">🎨 Editor</span>
+          </div>
+          <div className="flex-1 overflow-y-auto p-3 space-y-4">
+            {/* Background */}
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-widest text-white/40 mb-2">พื้นหลัง</p>
+              <label className="flex flex-col items-center gap-1.5 rounded-xl border-2 border-dashed border-white/15 bg-white/3 py-4 cursor-pointer hover:border-primary-500/50">
+                <ImageIcon size={18} className="text-white/40" />
+                <span className="text-xs text-white/60">{uploadingBg ? "กำลังอัปโหลด…" : "อัปโหลดรูปพื้นหลัง"}</span>
+                <input type="file" accept="image/*" className="hidden" onChange={uploadBg} />
+              </label>
+            </div>
+            {/* Furniture palette */}
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-widest text-white/40 mb-2">เฟอร์นิเจอร์ (คลิกเพื่อวาง)</p>
+              <div className="grid grid-cols-3 gap-1.5">
+                {FURNITURE_CATALOG.map((n) => (
+                  <button key={n} onClick={() => addFurn(n)} title={n}
+                    className="flex flex-col items-center gap-1 rounded-lg border border-white/8 bg-white/3 p-2 hover:border-primary-500/40 hover:bg-primary-600/10">
+                    <img src={furnUrl(n)} alt={n} className="h-8 w-8 object-contain" />
+                    <span className="text-[8px] text-white/40 truncate w-full text-center">{n}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+            {/* Placed furniture list */}
+            {furniture.length > 0 && (
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-widest text-white/40 mb-2">วางแล้ว ({furniture.length})</p>
+                <div className="space-y-1">
+                  {furniture.map((f) => (
+                    <div key={f.id} className="flex items-center gap-2 rounded-lg bg-white/3 px-2 py-1.5">
+                      {f.imageUrl && <img src={f.imageUrl} className="h-5 w-5 object-contain" alt="" />}
+                      <span className="text-xs text-white/60 flex-1 truncate">{f.label}</span>
+                      <button onClick={() => removeFurniture(f.id)} className="text-white/30 hover:text-red-400"><Trash2 size={13} /></button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Agent panel */}
-      {selectedAgent && (
+      {!editor && selectedAgent && (
         <div className="absolute right-5 top-16 z-10 w-60 animate-slide-up">
           <div className="rounded-2xl border p-5 backdrop-blur-xl"
             style={{ background: "rgba(5,5,22,0.9)", borderColor: (AGENT_COLORS[selectedAgent.agent_type] ?? "#6366f1") + "44" }}>

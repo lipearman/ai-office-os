@@ -19,15 +19,22 @@ export interface AgentSpawn {
   color: string;
 }
 
+export interface FurnitureSpawn {
+  id: string; url: string; x: number; y: number; w: number; h: number;
+}
+
 export interface SceneData {
   bgKey: string;
   bgUrl: string;
   sprites: SpriteMeta[];
   agents: AgentSpawn[];
+  furniture?: FurnitureSpawn[];
 }
 
 const DIR_ROW = { down: 0, left: 1, right: 2, up: 3 } as const;
 type Dir = keyof typeof DIR_ROW;
+
+const furnKey = (url: string) => "furn_" + url.replace(/[^a-z0-9]/gi, "_");
 
 interface AgentObj {
   sprite: Phaser.GameObjects.Sprite;
@@ -46,6 +53,8 @@ export class OfficeScene extends Phaser.Scene {
   private bg?: Phaser.GameObjects.Image;
   private collisionCanvas?: HTMLCanvasElement;
   private collisionCtx?: CanvasRenderingContext2D;
+  private editorMode = false;
+  private furniture = new Map<string, Phaser.GameObjects.Image>();
 
   constructor() { super({ key: "OfficeScene" }); }
 
@@ -55,6 +64,9 @@ export class OfficeScene extends Phaser.Scene {
     this.load.image(this.cfg.bgKey, this.cfg.bgUrl);
     for (const s of this.cfg.sprites) {
       this.load.spritesheet(s.key, s.url, { frameWidth: s.frameW, frameHeight: s.frameH });
+    }
+    for (const f of this.cfg.furniture ?? []) {
+      this.load.image(furnKey(f.url), f.url);
     }
   }
 
@@ -82,6 +94,9 @@ export class OfficeScene extends Phaser.Scene {
         }
       }
     }
+
+    // Furniture
+    for (const f of this.cfg.furniture ?? []) this.spawnFurniture(f);
 
     // Spawn agents
     const spread = Math.min(W, 900);
@@ -221,11 +236,65 @@ export class OfficeScene extends Phaser.Scene {
     return Math.max(d[0], d[1], d[2]) > 55;  // dark walls/border block
   }
 
+  // ── Furniture ───────────────────────────────────────────────────────────────
+  private spawnFurniture(f: FurnitureSpawn) {
+    const key = furnKey(f.url);
+    const create = () => {
+      const img = this.add.image(f.x, f.y, key).setDisplaySize(f.w, f.h);
+      img.setDepth(5 + f.y * 0.001);
+      img.setData("id", f.id);
+      this.furniture.set(f.id, img);
+      this.applyEditorTo(img);
+    };
+    if (this.textures.exists(key)) create();
+    else {
+      this.load.image(key, f.url);
+      this.load.once("complete", create);
+      this.load.start();
+    }
+  }
+
+  private applyEditorTo(img: Phaser.GameObjects.Image) {
+    if (this.editorMode) {
+      img.setInteractive({ draggable: true, useHandCursor: true });
+      this.input.setDraggable(img, true);
+    } else {
+      img.disableInteractive();
+    }
+  }
+
   // ── Called from React ──────────────────────────────────────────────────────
   updateAgentStatuses(list: { id: string; status: string }[]) {
     for (const u of list) {
       const a = this.agents.find((o) => o.data.id === u.id);
       if (a) a.data.status = u.status;
+    }
+  }
+
+  setEditorMode(on: boolean) {
+    this.editorMode = on;
+    for (const img of this.furniture.values()) this.applyEditorTo(img);
+    if (on && !this.input.listenerCount("drag")) {
+      this.input.on("drag", (_: any, obj: Phaser.GameObjects.Image, dx: number, dy: number) => {
+        obj.x = dx; obj.y = dy; obj.setDepth(5 + dy * 0.001);
+      });
+      this.input.on("dragend", (_: any, obj: Phaser.GameObjects.Image) => {
+        PhaserBus.emit(PEVENTS.FURNITURE_MOVED, { id: obj.getData("id"), x: obj.x, y: obj.y });
+      });
+    }
+  }
+
+  syncFurniture(list: FurnitureSpawn[]) {
+    const ids = new Set(list.map((f) => f.id));
+    // remove deleted
+    for (const [id, img] of this.furniture) {
+      if (!ids.has(id)) { img.destroy(); this.furniture.delete(id); }
+    }
+    // add / update
+    for (const f of list) {
+      const ex = this.furniture.get(f.id);
+      if (ex) { ex.setPosition(f.x, f.y).setDisplaySize(f.w, f.h); }
+      else this.spawnFurniture(f);
     }
   }
 }
