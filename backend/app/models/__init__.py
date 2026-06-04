@@ -3,6 +3,8 @@ from app.models.workspace import Workspace, WorkspaceMember, WorkspaceRole
 from app.models.office import Office, Room, OfficeObject
 from app.models.agent import Agent, AgentStatus
 from app.models.conversation import Conversation, Message, Task
+from app.models.tool import ToolLog, ToolStatus
+from app.models.document import Document, DocumentChunk
 
 __all__ = [
     "User", "UserRole",
@@ -10,4 +12,6 @@ __all__ = [
     "Office", "Room", "OfficeObject",
     "Agent", "AgentStatus",
     "Conversation", "Message", "Task",
+    "ToolLog", "ToolStatus",
+    "Document", "DocumentChunk",
 ]

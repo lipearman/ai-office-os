@@ -13,12 +13,14 @@ import {
   Settings,
   LogOut,
   Building2,
+  Wrench,
 } from "lucide-react";
 
 const navItems = [
   { href: "/dashboard", icon: LayoutDashboard, label: "Dashboard" },
-  { href: "/office", icon: Building2, label: "3D Office" },
+  { href: "/office", icon: Building2, label: "Office" },
   { href: "/agents", icon: Bot, label: "Agents" },
+  { href: "/tools", icon: Wrench, label: "Tools" },
   { href: "/workflows", icon: Workflow, label: "Workflows" },
   { href: "/knowledge", icon: BookOpen, label: "Knowledge" },
   { href: "/team", icon: Users, label: "Team" },

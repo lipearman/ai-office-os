@@ -7,7 +7,7 @@ from pathlib import Path
 from app.core.config import settings
 from app.core.database import init_db
 from app.core.redis import close_redis
-from app.api.v1 import auth, workspaces, health, offices, agents, conversations, seed, uploads
+from app.api.v1 import auth, workspaces, health, offices, agents, conversations, seed, uploads, tools, knowledge
 from app.websocket.router import router as ws_router
 import structlog
 import traceback
@@ -59,6 +59,8 @@ app.include_router(agents.router,         prefix="/api/v1")
 app.include_router(conversations.router,  prefix="/api/v1")
 app.include_router(seed.router,           prefix="/api/v1")
 app.include_router(uploads.router,        prefix="/api/v1")
+app.include_router(tools.router,          prefix="/api/v1")
+app.include_router(knowledge.router,      prefix="/api/v1")
 app.include_router(ws_router)
 
 # Serve uploaded files
