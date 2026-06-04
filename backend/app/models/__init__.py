@@ -5,6 +5,7 @@ from app.models.agent import Agent, AgentStatus
 from app.models.conversation import Conversation, Message, Task
 from app.models.tool import ToolLog, ToolStatus
 from app.models.document import Document, DocumentChunk
+from app.models.workflow import Workflow, WorkflowRun
 
 __all__ = [
     "User", "UserRole",
@@ -14,4 +15,5 @@ __all__ = [
     "Conversation", "Message", "Task",
     "ToolLog", "ToolStatus",
     "Document", "DocumentChunk",
+    "Workflow", "WorkflowRun",
 ]
