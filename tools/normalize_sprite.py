@@ -3,19 +3,71 @@ Normalize an irregular 2-col x 4-row character sheet into a clean,
 uniform spritesheet. Finds the 8 figures via connected-components,
 clusters them into 4 rows x 2 cols, then recomposites bottom-centered
 into equal cells.
+
+Usage:
+  python normalize_sprite.py <src_image> <character_name>
+  e.g. python normalize_sprite.py "C:\\...\\art.png" boy_blonde
+       -> writes assets/characters/walk_boy_blonde.png
+
+If a non-transparent (white/dark) background is present it is removed
+first via border flood-fill before component detection.
 """
-import sys
+import sys, os
 from collections import deque
 from PIL import Image
 
-SRC = r"C:\Users\dpras\Downloads\ChatGPT Image Charactors 01.PNG"
-OUT = r"C:\Users\dpras\source\repos\GitHub\ai-office-os\frontend\public\assets\characters\walk_boy_brown.png"
+ASSETS = r"C:\Users\dpras\source\repos\GitHub\ai-office-os\frontend\public\assets\characters"
 PREVIEW = r"C:\Users\dpras\source\repos\GitHub\ai-office-os\tools\normalized_preview.png"
+
+if len(sys.argv) >= 3:
+    SRC = sys.argv[1]
+    OUT = os.path.join(ASSETS, f"walk_{sys.argv[2]}.png")
+else:
+    SRC = r"C:\Users\dpras\Downloads\ChatGPT Image Charactors 01.PNG"
+    OUT = os.path.join(ASSETS, "walk_boy_brown.png")
 
 ALPHA_T = 80      # opaque threshold
 MIN_AREA = 350    # ignore smudges smaller than this
 
-im = Image.open(SRC).convert("RGBA")
+
+def strip_solid_bg(img):
+    """If image has no alpha (or fully opaque), flood-fill border bg to clear.
+    Handles both white and dark backgrounds."""
+    img = img.convert("RGBA")
+    w, h = img.size
+    p = img.load()
+    # detect if already has transparency
+    has_alpha = any(p[x, 0][3] < 250 for x in range(0, w, max(1, w // 20)))
+    if has_alpha:
+        return img
+    corner = p[0, 0]
+    bright = max(corner[:3])
+    def is_bg(px):
+        r, g, b, a = px
+        if bright > 200:   # white-ish bg
+            return r > 225 and g > 225 and b > 225
+        return max(r, g, b) < 60   # dark bg
+    seen = bytearray(w * h); q = deque()
+    def push(x, y):
+        i = y*w+x
+        if not seen[i]:
+            seen[i] = 1
+            if is_bg(p[x, y]): q.append((x, y))
+    for x in range(w): push(x, 0); push(x, h-1)
+    for y in range(h): push(0, y); push(w-1, y)
+    while q:
+        x, y = q.popleft(); r, g, b, a = p[x, y]; p[x, y] = (r, g, b, 0)
+        for dx, dy in ((1,0),(-1,0),(0,1),(0,-1)):
+            nx, ny = x+dx, y+dy
+            if 0 <= nx < w and 0 <= ny < h:
+                i = ny*w+nx
+                if not seen[i]:
+                    seen[i] = 1
+                    if is_bg(p[nx, ny]): q.append((nx, ny))
+    return img
+
+
+im = strip_solid_bg(Image.open(SRC))
 W, H = im.size
 px = im.load()
 
