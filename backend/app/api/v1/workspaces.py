@@ -81,3 +81,99 @@ async def update_workspace(
         setattr(workspace, field, value)
 
     return WorkspaceOut.model_validate(workspace)
+
+
+# ── Members ──────────────────────────────────────────────────────────────────
+
+from pydantic import BaseModel, EmailStr
+
+
+class MemberAddIn(BaseModel):
+    email: str
+    role: WorkspaceRole = WorkspaceRole.MEMBER
+
+
+@router.get("/{workspace_id}/members")
+async def list_members(
+    workspace_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    res = await db.execute(
+        select(WorkspaceMember, User)
+        .join(User, User.id == WorkspaceMember.user_id)
+        .where(WorkspaceMember.workspace_id == workspace_id)
+    )
+    return {"members": [
+        {"id": str(m.id), "user_id": str(u.id), "name": u.full_name,
+         "email": u.email, "role": m.role.value, "avatar_url": u.avatar_url}
+        for m, u in res.all()
+    ]}
+
+
+@router.post("/{workspace_id}/members")
+async def add_member(
+    workspace_id: uuid.UUID,
+    data: MemberAddIn,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    from app.core.security_rbac import require_role, record_audit
+    await require_role(db, workspace_id, current_user, WorkspaceRole.ADMIN)
+
+    ures = await db.execute(select(User).where(User.email == data.email))
+    user = ures.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="No user with that email")
+
+    exists = await db.execute(select(WorkspaceMember).where(
+        WorkspaceMember.workspace_id == workspace_id, WorkspaceMember.user_id == user.id))
+    if exists.scalar_one_or_none():
+        raise HTTPException(status_code=400, detail="Already a member")
+
+    m = WorkspaceMember(workspace_id=workspace_id, user_id=user.id, role=data.role)
+    db.add(m)
+    await record_audit(db, workspace_id, current_user, action="member.add",
+                       target_type="user", target_id=str(user.id),
+                       detail={"email": data.email, "role": data.role.value})
+    await db.flush()
+    return {"id": str(m.id), "email": data.email, "role": data.role.value}
+
+
+@router.patch("/{workspace_id}/members/{member_id}")
+async def update_member_role(
+    workspace_id: uuid.UUID,
+    member_id: uuid.UUID,
+    data: MemberAddIn,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    from app.core.security_rbac import require_role, record_audit
+    await require_role(db, workspace_id, current_user, WorkspaceRole.ADMIN)
+    res = await db.execute(select(WorkspaceMember).where(WorkspaceMember.id == member_id))
+    m = res.scalar_one_or_none()
+    if not m:
+        raise HTTPException(status_code=404, detail="Member not found")
+    m.role = data.role
+    await record_audit(db, workspace_id, current_user, action="member.role",
+                       target_type="member", target_id=str(member_id),
+                       detail={"role": data.role.value})
+    return {"id": str(m.id), "role": data.role.value}
+
+
+@router.delete("/{workspace_id}/members/{member_id}")
+async def remove_member(
+    workspace_id: uuid.UUID,
+    member_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    from app.core.security_rbac import require_role, record_audit
+    await require_role(db, workspace_id, current_user, WorkspaceRole.ADMIN)
+    res = await db.execute(select(WorkspaceMember).where(WorkspaceMember.id == member_id))
+    m = res.scalar_one_or_none()
+    if m:
+        await db.delete(m)
+        await record_audit(db, workspace_id, current_user, action="member.remove",
+                           target_type="member", target_id=str(member_id))
+    return {"deleted": str(member_id)}
