@@ -8,6 +8,7 @@ from app.models.document import Document, DocumentChunk
 from app.models.workflow import Workflow, WorkflowRun
 from app.models.memory import Memory
 from app.models.event import UsageEvent
+from app.models.audit import AuditLog
 
 __all__ = [
     "User", "UserRole",
@@ -20,4 +21,5 @@ __all__ = [
     "Workflow", "WorkflowRun",
     "Memory",
     "UsageEvent",
+    "AuditLog",
 ]

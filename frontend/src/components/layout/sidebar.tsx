@@ -16,17 +16,21 @@ import {
   Wrench,
   Brain,
   BarChart3,
+  MessagesSquare,
+  Shield,
 } from "lucide-react";
 
 const navItems = [
   { href: "/dashboard", icon: LayoutDashboard, label: "Dashboard" },
   { href: "/office", icon: Building2, label: "Office" },
   { href: "/agents", icon: Bot, label: "Agents" },
+  { href: "/meeting", icon: MessagesSquare, label: "AI Meeting" },
   { href: "/tools", icon: Wrench, label: "Tools" },
   { href: "/workflows", icon: Workflow, label: "Workflows" },
   { href: "/knowledge", icon: BookOpen, label: "Knowledge" },
   { href: "/memory", icon: Brain, label: "Memory" },
   { href: "/observability", icon: BarChart3, label: "Observability" },
+  { href: "/security", icon: Shield, label: "Security" },
   { href: "/team", icon: Users, label: "Team" },
   { href: "/settings", icon: Settings, label: "Settings" },
 ];

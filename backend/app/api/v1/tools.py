@@ -69,6 +69,12 @@ async def run_tool(
         status=status, error=error, duration_ms=duration,
     )
     db.add(log)
+
+    from app.core.security_rbac import record_audit
+    await record_audit(db, data.workspace_id, current_user,
+                       action="tool.run", target_type="tool", target_id=data.tool_name,
+                       status="ok" if status == ToolStatus.SUCCESS else "error",
+                       detail={"approved": data.approved})
     await db.flush()
 
     return {"status": status.value.lower(), "result": result, "error": error,

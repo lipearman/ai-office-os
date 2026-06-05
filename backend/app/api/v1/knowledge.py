@@ -117,7 +117,17 @@ async def delete_document(
     doc = result.scalar_one_or_none()
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
+
+    # RBAC: deleting knowledge requires at least MEMBER role
+    from app.core.security_rbac import require_role, record_audit
+    from app.models.workspace import WorkspaceRole
+    await require_role(db, doc.workspace_id, current_user, WorkspaceRole.MEMBER)
+
+    title = doc.title
     await db.delete(doc)
+    await record_audit(db, doc.workspace_id, current_user, action="document.delete",
+                       target_type="document", target_id=str(document_id),
+                       detail={"title": title})
     return {"deleted": str(document_id)}
 
 
