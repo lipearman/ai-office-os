@@ -7,6 +7,7 @@ from app.models.tool import ToolLog, ToolStatus
 from app.models.document import Document, DocumentChunk
 from app.models.workflow import Workflow, WorkflowRun
 from app.models.memory import Memory
+from app.models.event import UsageEvent
 
 __all__ = [
     "User", "UserRole",
@@ -18,4 +19,5 @@ __all__ = [
     "Document", "DocumentChunk",
     "Workflow", "WorkflowRun",
     "Memory",
+    "UsageEvent",
 ]

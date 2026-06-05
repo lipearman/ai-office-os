@@ -130,17 +130,37 @@ async def send_message(
     )
     memory_context = format_memories(recalled)
 
-    from app.agents.runtime import run_agent
-    reply_text = await run_agent(
-        user_message=data.content,
-        agent_type=agent.agent_type if agent else "reception",
-        agent_id=str(agent.id) if agent else "",
+    import time as _time
+    from app.observability.tracker import record_usage
+    _t0 = _time.perf_counter()
+    _status, _error = "success", None
+    try:
+        from app.agents.runtime import run_agent
+        reply_text = await run_agent(
+            user_message=data.content,
+            agent_type=agent.agent_type if agent else "reception",
+            agent_id=str(agent.id) if agent else "",
+            agent_name=agent.name if agent else "AI",
+            workspace_id=str(conv.workspace_id),
+            user_id=str(current_user.id),
+            conversation_id=str(conv.id),
+            history=history,
+            memory_context=memory_context,
+        )
+    except Exception as ex:
+        reply_text, _status, _error = f"Error: {ex}", "error", str(ex)
+    _latency = (_time.perf_counter() - _t0) * 1000
+
+    # Record usage event (tokens estimated + latency)
+    await record_usage(
+        db, str(conv.workspace_id), kind="chat",
+        model=(agent.model_name if agent else "auto"),
+        agent_id=str(agent.id) if agent else None,
         agent_name=agent.name if agent else "AI",
-        workspace_id=str(conv.workspace_id),
         user_id=str(current_user.id),
-        conversation_id=str(conv.id),
-        history=history,
-        memory_context=memory_context,
+        prompt_text=memory_context + data.content + "".join(h["content"] for h in history),
+        completion_text=reply_text, latency_ms=_latency,
+        status=_status, error=_error,
     )
 
     assistant_msg = Message(conversation_id=conv.id, role=MessageRole.ASSISTANT, content=reply_text)

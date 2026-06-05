@@ -7,7 +7,7 @@ from pathlib import Path
 from app.core.config import settings
 from app.core.database import init_db
 from app.core.redis import close_redis
-from app.api.v1 import auth, workspaces, health, offices, agents, conversations, seed, uploads, tools, knowledge, workflows, memories
+from app.api.v1 import auth, workspaces, health, offices, agents, conversations, seed, uploads, tools, knowledge, workflows, memories, observability
 from app.websocket.router import router as ws_router
 import structlog
 import traceback
@@ -63,6 +63,7 @@ app.include_router(tools.router,          prefix="/api/v1")
 app.include_router(knowledge.router,      prefix="/api/v1")
 app.include_router(workflows.router,       prefix="/api/v1")
 app.include_router(memories.router,        prefix="/api/v1")
+app.include_router(observability.router,   prefix="/api/v1")
 app.include_router(ws_router)
 
 # Serve uploaded files
