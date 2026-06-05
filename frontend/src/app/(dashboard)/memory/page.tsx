@@ -20,8 +20,8 @@ export default function MemoryPage() {
   const [hits, setHits] = useState<any[]>([]);
   const [adding, setAdding] = useState(false);
 
-  const load = () => current && api.get(`/memories/workspace/${current.id}`).then(r => setMems(r.data.memories));
-  useEffect(load, [current]);
+  const load = () => { if (current) api.get(`/memories/workspace/${current.id}`).then(r => setMems(r.data.memories)).catch(() => {}); };
+  useEffect(() => { load(); }, [current]);
 
   const add = async () => {
     if (!current || !content.trim()) return;
