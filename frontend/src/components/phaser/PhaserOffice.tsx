@@ -22,13 +22,6 @@ const AGENT_EMOJI: Record<string, string> = {
   dev: "💻", dba: "🗄️", qa: "🔍", rag: "📚",
 };
 
-const FURNITURE_CATALOG = [
-  "desk", "computer", "chair", "sofa", "coffee_table", "plant", "bookshelf",
-  "cabinet", "locker", "vending_machine", "water_dispenser", "whiteboard",
-  "notice_board", "box", "door", "stairs",
-];
-const furnUrl = (n: string) => `/assets/furniture/${n}.png`;
-
 function loadDims(url: string): Promise<{ w: number; h: number }> {
   return new Promise((res) => {
     const img = new Image();
@@ -55,7 +48,8 @@ export default function PhaserOffice({ agents, officeName }: Props) {
   const [selFurnId, setSelFurnId] = useState<string | null>(null);
   const [uploadingFurn, setUploadingFurn] = useState(false);
 
-  const { backgroundUrl, agentSprites, furniture, addFurniture, updateFurniture, removeFurniture, setBackground, setAgentSprite } = useOfficeGameStore();
+  const { backgroundUrl, agentSprites, furniture, catalog, addFurniture, updateFurniture, removeFurniture, setBackground, setAgentSprite, addCatalogItem, updateCatalogItem, removeCatalogItem } = useOfficeGameStore();
+  const replaceCatalogRef = useRef<string | null>(null);
   const { openOrCreate, setActive } = useChatStore();
   const { current: workspace } = useWorkspaceStore();
   const { upload } = useImageUpload();
@@ -189,7 +183,8 @@ export default function PhaserOffice({ agents, officeName }: Props) {
     sceneRef.current?.setEditorMode?.(next);
   };
 
-  const addFurn = async (name: string, url = furnUrl(name)) => {
+  // Place a catalog item into the scene
+  const addFurn = async (name: string, url: string) => {
     const dims = await loadDims(url);
     const ratio = dims.w && dims.h ? dims.w / dims.h : 1.4;
     const h = 90;
@@ -199,17 +194,29 @@ export default function PhaserOffice({ agents, officeName }: Props) {
     });
   };
 
+  // Upload a brand-new catalog item (persists, reusable)
   const uploadFurn = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     setUploadingFurn(true);
     try {
       const url = await upload(file);
-      await addFurn(file.name.replace(/\.[^.]+$/, ""), url);
+      addCatalogItem({ id: `cat_${Date.now()}`, name: file.name.replace(/\.[^.]+$/, ""), url });
     } finally {
       setUploadingFurn(false);
       e.target.value = "";
     }
+  };
+
+  // Replace the image of an existing catalog item
+  const replaceCatalogImg = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    const id = replaceCatalogRef.current;
+    if (!file || !id) return;
+    const url = await upload(file);
+    updateCatalogItem(id, { url });
+    replaceCatalogRef.current = null;
+    e.target.value = "";
   };
 
   const uploadBg = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -303,24 +310,46 @@ export default function PhaserOffice({ agents, officeName }: Props) {
                 ))}
               </div>
             </div>
-            {/* Furniture palette */}
+            {/* Furniture catalog — place + manage */}
             <div>
               <p className="text-[10px] font-bold uppercase tracking-widest text-white/40 mb-2">เฟอร์นิเจอร์ (คลิกเพื่อวาง)</p>
               <div className="grid grid-cols-3 gap-1.5">
-                {FURNITURE_CATALOG.map((n) => (
-                  <button key={n} onClick={() => addFurn(n)} title={n}
+                {catalog.map((item) => (
+                  <button key={item.id} onClick={() => addFurn(item.name, item.url)} title={item.name}
                     className="flex flex-col items-center gap-1 rounded-lg border border-white/8 bg-white/3 p-2 hover:border-primary-500/40 hover:bg-primary-600/10">
-                    <img src={furnUrl(n)} alt={n} className="h-8 w-8 object-contain" />
-                    <span className="text-[8px] text-white/40 truncate w-full text-center">{n}</span>
+                    <img src={item.url} alt={item.name} className="h-8 w-8 object-contain" />
+                    <span className="text-[8px] text-white/40 truncate w-full text-center">{item.name}</span>
                   </button>
                 ))}
               </div>
-              {/* Upload custom furniture */}
+              {/* Upload custom furniture (adds to catalog) */}
               <label className="mt-2 flex items-center justify-center gap-1.5 rounded-lg border border-dashed border-white/15 bg-white/3 py-2 cursor-pointer hover:border-primary-500/40">
                 <Plus size={13} className="text-white/40" />
-                <span className="text-[11px] text-white/60">{uploadingFurn ? "กำลังอัปโหลด…" : "อัปโหลดรูป furniture เอง"}</span>
+                <span className="text-[11px] text-white/60">{uploadingFurn ? "กำลังอัปโหลด…" : "เพิ่ม furniture (อัปโหลดรูป)"}</span>
                 <input type="file" accept="image/*" className="hidden" onChange={uploadFurn} />
               </label>
+            </div>
+
+            {/* Manage catalog — rename / replace image / delete */}
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-widest text-white/40 mb-2">จัดการ catalog ({catalog.length})</p>
+              <div className="space-y-1">
+                {catalog.map((item) => (
+                  <div key={item.id} className="flex items-center gap-2 rounded-lg bg-white/3 px-2 py-1">
+                    <img src={item.url} className="h-5 w-5 object-contain shrink-0" alt="" />
+                    <input value={item.name} onChange={(e) => updateCatalogItem(item.id, { name: e.target.value })}
+                      className="text-xs text-white/70 bg-transparent flex-1 min-w-0 outline-none" />
+                    <label className="cursor-pointer text-white/30 hover:text-primary-400" title="เปลี่ยนรูป">
+                      <ImageIcon size={12} />
+                      <input type="file" accept="image/*" className="hidden"
+                        onChange={(e) => { replaceCatalogRef.current = item.id; replaceCatalogImg(e); }} />
+                    </label>
+                    <button onClick={() => removeCatalogItem(item.id)} className="text-white/30 hover:text-red-400" title="ลบออกจาก catalog">
+                      <Trash2 size={12} />
+                    </button>
+                  </div>
+                ))}
+              </div>
             </div>
             {/* Placed furniture list */}
             {furniture.length > 0 && (
