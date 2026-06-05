@@ -7,9 +7,11 @@ import { defaultSpriteFor } from "@/components/canvas2d/defaultAssets";
 import { useChatStore } from "@/store/chat";
 import { useWorkspaceStore } from "@/store/workspace";
 import { useImageUpload } from "@/components/canvas2d/useImageUpload";
+import { SpriteUploadModal } from "@/components/canvas2d/SpriteUploadModal";
+import { defaultSpriteFor as _def } from "@/components/canvas2d/defaultAssets";
 import { PhaserBus, PEVENTS } from "./eventBus";
 import type { SceneData, SpriteMeta, AgentSpawn, FurnitureSpawn } from "./OfficeScene";
-import { X, MessageSquare, Pencil, Check, ImageIcon, Plus, Trash2 } from "lucide-react";
+import { X, MessageSquare, Pencil, Check, ImageIcon, Plus, Trash2, UserCircle } from "lucide-react";
 
 const AGENT_COLORS: Record<string, string> = {
   reception: "#6366f1", ceo: "#f59e0b", pm: "#f59e0b",
@@ -49,8 +51,9 @@ export default function PhaserOffice({ agents, officeName }: Props) {
   const [selectedAgent, setSelectedAgent] = useState<AgentData | null>(null);
   const [editor, setEditor] = useState(false);
   const [uploadingBg, setUploadingBg] = useState(false);
+  const [spriteAgent, setSpriteAgent] = useState<AgentData | null>(null);
 
-  const { backgroundUrl, agentSprites, furniture, addFurniture, updateFurniture, removeFurniture, setBackground } = useOfficeGameStore();
+  const { backgroundUrl, agentSprites, furniture, addFurniture, updateFurniture, removeFurniture, setBackground, setAgentSprite } = useOfficeGameStore();
   const { openOrCreate, setActive } = useChatStore();
   const { current: workspace } = useWorkspaceStore();
   const { upload } = useImageUpload();
@@ -185,6 +188,22 @@ export default function PhaserOffice({ agents, officeName }: Props) {
     finally { setUploadingBg(false); }
   };
 
+  // Save uploaded character sprite + apply to the scene live
+  const applySprite = async (agentId: string, sprite: any) => {
+    setAgentSprite(agentId, sprite);
+    const cfg = sprite ?? _def(agents.find((a) => a.id === agentId)?.agent_type ?? "reception");
+    if (!cfg) return;
+    const dims = await loadDims(cfg.url);
+    const cols = cfg.cols || 1, rows = cfg.rows || 1;
+    const meta: SpriteMeta = {
+      key: keyOf(cfg.url), url: cfg.url,
+      frameW: cfg.frameW || Math.floor(dims.w / cols),
+      frameH: cfg.frameH || Math.floor(dims.h / rows),
+      cols, rows,
+    };
+    sceneRef.current?.updateAgentSprite?.(agentId, meta);
+  };
+
   const handleChat = useCallback(async () => {
     if (!selectedAgent || !workspace) return;
     const convId = await openOrCreate(selectedAgent.id, workspace.id);
@@ -233,6 +252,24 @@ export default function PhaserOffice({ agents, officeName }: Props) {
                 <span className="text-xs text-white/60">{uploadingBg ? "กำลังอัปโหลด…" : "อัปโหลดรูปพื้นหลัง"}</span>
                 <input type="file" accept="image/*" className="hidden" onChange={uploadBg} />
               </label>
+            </div>
+            {/* Characters — upload sprite per agent */}
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-widest text-white/40 mb-2">ตัวละคร (อัปโหลด sprite)</p>
+              <div className="space-y-1">
+                {agents.map((a) => (
+                  <button key={a.id} onClick={() => setSpriteAgent(a)}
+                    className="flex items-center gap-2 w-full rounded-lg bg-white/3 px-2 py-1.5 hover:bg-white/8 text-left">
+                    <span className="text-base">{AGENT_EMOJI[a.agent_type] ?? "🤖"}</span>
+                    <span className="text-xs text-white/70 flex-1 truncate">{a.name}</span>
+                    <span className="text-[9px] px-1.5 py-0.5 rounded"
+                      style={{ background: (AGENT_COLORS[a.agent_type] ?? "#6366f1") + "22", color: AGENT_COLORS[a.agent_type] ?? "#6366f1" }}>
+                      {agentSprites[a.id] ? "custom" : "default"}
+                    </span>
+                    <UserCircle size={13} className="text-white/30" />
+                  </button>
+                ))}
+              </div>
             </div>
             {/* Furniture palette */}
             <div>
@@ -291,6 +328,16 @@ export default function PhaserOffice({ agents, officeName }: Props) {
             </button>
           </div>
         </div>
+      )}
+
+      {/* Character sprite upload modal */}
+      {spriteAgent && (
+        <SpriteUploadModal
+          agentName={spriteAgent.name}
+          current={agentSprites[spriteAgent.id] ?? null}
+          onSave={(sprite) => applySprite(spriteAgent.id, sprite)}
+          onClose={() => setSpriteAgent(null)}
+        />
       )}
     </div>
   );

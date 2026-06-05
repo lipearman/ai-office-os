@@ -232,6 +232,42 @@ export class OfficeScene extends Phaser.Scene {
     this.collisionCtx = ctx;
   }
 
+  private createAnimsFor(meta: SpriteMeta) {
+    const tex = this.textures.get(meta.key);
+    const realFrames = Math.max(0, (tex?.frameTotal ?? 1) - 1);
+    for (const dir of ["down", "left", "right", "up"] as Dir[]) {
+      const row = DIR_ROW[dir];
+      let start = row * meta.cols, end = start + meta.cols - 1;
+      if (start > realFrames - 1) { start = 0; end = Math.max(0, realFrames - 1); }
+      else if (end > realFrames - 1) end = realFrames - 1;
+      const frames = realFrames > 0 ? this.anims.generateFrameNumbers(meta.key, { start, end }) : [];
+      const key = `${meta.key}-${dir}`;
+      if (frames.length > 0 && !this.anims.exists(key)) {
+        this.anims.create({ key, frames, frameRate: 6, repeat: -1 });
+      }
+    }
+  }
+
+  /** Replace an agent's sprite sheet live (uploaded character art). */
+  updateAgentSprite(agentId: string, meta: SpriteMeta) {
+    const apply = () => {
+      this.createAnimsFor(meta);
+      if (!this.cfg.sprites.find((s) => s.key === meta.key)) this.cfg.sprites.push(meta);
+      const a = this.agents.find((o) => o.data.id === agentId);
+      if (a) {
+        a.data.spriteKey = meta.key;
+        a.sprite.setTexture(meta.key, Math.min(1, meta.cols - 1));
+        a.sprite.setScale(84 / meta.frameH);
+      }
+    };
+    if (this.textures.exists(meta.key)) apply();
+    else {
+      this.load.spritesheet(meta.key, meta.url, { frameWidth: meta.frameW, frameHeight: meta.frameH });
+      this.load.once("complete", apply);
+      this.load.start();
+    }
+  }
+
   /** Swap the background live without recreating the scene (keeps agents). */
   changeBackground(url: string) {
     const key = "bg_" + url.replace(/[^a-z0-9]/gi, "_");
