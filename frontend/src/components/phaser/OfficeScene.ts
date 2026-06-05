@@ -201,11 +201,12 @@ export class OfficeScene extends Phaser.Scene {
     const step = a.speed * dt;
     const nx = a.sprite.x + (dx / dist) * Math.min(step, dist);
     const ny = a.sprite.y + (dy / dist) * Math.min(step, dist);
+    const footOff = a.sprite.displayHeight * 0.42; // collide at the feet
 
-    // collision: try full, then axis slides
-    if (this.walkable(nx, ny)) { a.sprite.x = nx; a.sprite.y = ny; }
-    else if (this.walkable(nx, a.sprite.y)) { a.sprite.x = nx; }
-    else if (this.walkable(a.sprite.x, ny)) { a.sprite.y = ny; }
+    // collision: try full, then axis slides (agent walks around obstacles)
+    if (this.walkable(nx, ny + footOff)) { a.sprite.x = nx; a.sprite.y = ny; }
+    else if (this.walkable(nx, a.sprite.y + footOff)) { a.sprite.x = nx; }
+    else if (this.walkable(a.sprite.x, ny + footOff)) { a.sprite.y = ny; }
     else { a.target = { x: a.sprite.x, y: a.sprite.y }; }
 
     a.sprite.setDepth(10 + a.sprite.y * 0.001);
@@ -286,13 +287,26 @@ export class OfficeScene extends Phaser.Scene {
   }
 
   private walkable(worldX: number, worldY: number): boolean {
+    // furniture footprints block movement (agents walk around them)
+    if (!this.editorMode && this.furnitureBlocks(worldX, worldY)) return false;
+
     if (!this.collisionCtx || !this.collisionCanvas) return true;
-    // map world (game) coords → texture coords (bg is stretched to fill)
     const tx = Math.floor((worldX / this.scale.width) * this.collisionCanvas.width);
     const ty = Math.floor((worldY / this.scale.height) * this.collisionCanvas.height);
     if (tx < 0 || ty < 0 || tx >= this.collisionCanvas.width || ty >= this.collisionCanvas.height) return false;
     const d = this.collisionCtx.getImageData(tx, ty, 1, 1).data;
     return Math.max(d[0], d[1], d[2]) > 55;  // dark walls/border block
+  }
+
+  /** Bottom-front footprint of each furniture piece is solid. */
+  private furnitureBlocks(x: number, y: number): boolean {
+    for (const img of this.furniture.values()) {
+      const dw = img.displayWidth, dh = img.displayHeight;
+      const left = img.x - dw * 0.36, right = img.x + dw * 0.36;
+      const top = img.y - dh * 0.05, bottom = img.y + dh * 0.45;
+      if (x >= left && x <= right && y >= top && y <= bottom) return true;
+    }
+    return false;
   }
 
   // ── Furniture ───────────────────────────────────────────────────────────────
@@ -302,6 +316,9 @@ export class OfficeScene extends Phaser.Scene {
       const img = this.add.image(f.x, f.y, key).setDisplaySize(f.w, f.h);
       img.setDepth(5 + f.y * 0.001);
       img.setData("id", f.id);
+      img.on("pointerdown", () => {
+        if (this.editorMode) PhaserBus.emit(PEVENTS.FURNITURE_SELECTED, f.id);
+      });
       this.furniture.set(f.id, img);
       this.applyEditorTo(img);
     };

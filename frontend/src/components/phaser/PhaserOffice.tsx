@@ -52,6 +52,8 @@ export default function PhaserOffice({ agents, officeName }: Props) {
   const [editor, setEditor] = useState(false);
   const [uploadingBg, setUploadingBg] = useState(false);
   const [spriteAgent, setSpriteAgent] = useState<AgentData | null>(null);
+  const [selFurnId, setSelFurnId] = useState<string | null>(null);
+  const [uploadingFurn, setUploadingFurn] = useState(false);
 
   const { backgroundUrl, agentSprites, furniture, addFurniture, updateFurniture, removeFurniture, setBackground, setAgentSprite } = useOfficeGameStore();
   const { openOrCreate, setActive } = useChatStore();
@@ -150,6 +152,24 @@ export default function PhaserOffice({ agents, officeName }: Props) {
     return () => { PhaserBus.off(PEVENTS.FURNITURE_MOVED, h); };
   }, [updateFurniture]);
 
+  // Furniture click in editor → select (for delete)
+  useEffect(() => {
+    const h = (id: string) => setSelFurnId(id);
+    PhaserBus.on(PEVENTS.FURNITURE_SELECTED, h);
+    return () => { PhaserBus.off(PEVENTS.FURNITURE_SELECTED, h); };
+  }, []);
+
+  // Delete key removes the selected furniture
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (editor && selFurnId && (e.key === "Delete" || e.key === "Backspace")) {
+        removeFurniture(selFurnId); setSelFurnId(null);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [editor, selFurnId, removeFurniture]);
+
   // Sync furniture list → scene (live, no rebuild)
   useEffect(() => {
     const spawns: FurnitureSpawn[] = furniture
@@ -169,8 +189,7 @@ export default function PhaserOffice({ agents, officeName }: Props) {
     sceneRef.current?.setEditorMode?.(next);
   };
 
-  const addFurn = async (name: string) => {
-    const url = furnUrl(name);
+  const addFurn = async (name: string, url = furnUrl(name)) => {
     const dims = await loadDims(url);
     const ratio = dims.w && dims.h ? dims.w / dims.h : 1.4;
     const h = 90;
@@ -178,6 +197,19 @@ export default function PhaserOffice({ agents, officeName }: Props) {
       id: `f_${Date.now()}`, label: name, imageUrl: url,
       x: 300, y: 300, width: Math.round(h * ratio), height: h, emoji: "🪑",
     });
+  };
+
+  const uploadFurn = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploadingFurn(true);
+    try {
+      const url = await upload(file);
+      await addFurn(file.name.replace(/\.[^.]+$/, ""), url);
+    } finally {
+      setUploadingFurn(false);
+      e.target.value = "";
+    }
   };
 
   const uploadBg = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -283,17 +315,25 @@ export default function PhaserOffice({ agents, officeName }: Props) {
                   </button>
                 ))}
               </div>
+              {/* Upload custom furniture */}
+              <label className="mt-2 flex items-center justify-center gap-1.5 rounded-lg border border-dashed border-white/15 bg-white/3 py-2 cursor-pointer hover:border-primary-500/40">
+                <Plus size={13} className="text-white/40" />
+                <span className="text-[11px] text-white/60">{uploadingFurn ? "กำลังอัปโหลด…" : "อัปโหลดรูป furniture เอง"}</span>
+                <input type="file" accept="image/*" className="hidden" onChange={uploadFurn} />
+              </label>
             </div>
             {/* Placed furniture list */}
             {furniture.length > 0 && (
               <div>
-                <p className="text-[10px] font-bold uppercase tracking-widest text-white/40 mb-2">วางแล้ว ({furniture.length})</p>
+                <p className="text-[10px] font-bold uppercase tracking-widest text-white/40 mb-2">วางแล้ว ({furniture.length}) — คลิกในฉากเพื่อเลือก แล้วกด Delete</p>
                 <div className="space-y-1">
                   {furniture.map((f) => (
-                    <div key={f.id} className="flex items-center gap-2 rounded-lg bg-white/3 px-2 py-1.5">
+                    <div key={f.id}
+                      className={`flex items-center gap-2 rounded-lg px-2 py-1.5 ${selFurnId === f.id ? "bg-primary-600/20 border border-primary-500/40" : "bg-white/3 border border-transparent"}`}>
                       {f.imageUrl && <img src={f.imageUrl} className="h-5 w-5 object-contain" alt="" />}
                       <span className="text-xs text-white/60 flex-1 truncate">{f.label}</span>
-                      <button onClick={() => removeFurniture(f.id)} className="text-white/30 hover:text-red-400"><Trash2 size={13} /></button>
+                      <button onClick={() => { removeFurniture(f.id); if (selFurnId === f.id) setSelFurnId(null); }}
+                        className="text-white/30 hover:text-red-400"><Trash2 size={13} /></button>
                     </div>
                   ))}
                 </div>
