@@ -1,288 +1,191 @@
 # 🏢 AI Office OS
 
-> **Operating System for AI Workforce**  
-> Multi-Agent Platform in a 3D Office — Build, Manage, and Collaborate with AI Teams
+> **Operating System for AI Workforce**
+> A multi-agent platform where AI agents live and work together in a 2D RPG-style office — chat, run tools, search knowledge, build workflows, hold meetings, and remember.
 
 ![Version](https://img.shields.io/badge/version-0.1.0-blue)
-![License](https://img.shields.io/badge/license-MIT-green)
 ![Next.js](https://img.shields.io/badge/Next.js-15-black)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688)
+![Phaser](https://img.shields.io/badge/Phaser-3.90-845EC2)
 ![Python](https://img.shields.io/badge/Python-3.12-3776AB)
+![E2E](https://img.shields.io/badge/E2E-16%2F16%20passing-success)
 
 ---
 
-## ✨ Vision
+## ✨ What it is
 
-AI Office OS is not just another chatbot or workflow tool.  
-It is a **full AI Operating System** — a 3D virtual office where AI agents live, work, and collaborate as a team.
+AI Office OS is **not** just a chatbot. It's a full platform that combines:
 
-- 🤖 **AI Team** — Multiple specialized agents working together
-- ⚡ **AI Workflow** — Visual drag-and-drop workflow builder
-- 📚 **AI Knowledge** — Enterprise RAG with multi-source ingestion
-- 🔧 **AI Automation** — Connect to n8n, APIs, SQL, MCP tools
-- 🌐 **AI Collaboration** — Realtime multi-user workspace
-- 🏗️ **AI Workspace** — Fully config-driven, extensible like an OS
-
----
-
-## 🖼️ Tech Stack
-
-### Frontend
-| Tech | Purpose |
-|------|---------|
-| Next.js 15 | App framework |
-| TypeScript | Type safety |
-| TailwindCSS | Styling |
-| React Three Fiber + Three.js | 3D Office rendering |
-| Zustand | State management |
-| React Flow | Workflow builder |
-| Socket.IO Client | Realtime communication |
-
-### Backend
-| Tech | Purpose |
-|------|---------|
-| FastAPI | REST API + WebSocket |
-| SQLAlchemy (async) | ORM |
-| LangGraph | Multi-Agent runtime |
-| LangChain | LLM tooling |
-| Celery + Redis | Background tasks |
-| Alembic | DB migrations |
-
-### AI / LLM
-| Provider | Usage |
-|----------|-------|
-| Ollama | Local LLM (GPU) |
-| Gemini | Google AI |
-| OpenRouter | Multi-model access |
-| OpenAI-compatible | Any OpenAI API |
-
-### Infrastructure
-| Tech | Purpose |
-|------|---------|
-| PostgreSQL + pgvector | Main DB + Vector search |
-| Redis | Cache + Message broker |
-| Docker Compose | Local orchestration |
-| Vercel | Frontend hosting |
-| Ubuntu + Docker | Backend hosting |
+- 🤖 **AI Team** — 8 specialized agents (Reception, CEO, PM, BA, Dev, DBA, QA, RAG) with distinct personas, powered by LangGraph
+- 🎮 **2D RPG Office** — a Phaser game world where agent sprites walk around, with an in-browser editor (background, furniture, character sprite uploads, collision)
+- 💬 **Realtime Chat** — talk to any agent, SSE streaming, WebSocket presence/typing
+- 🔧 **Tool System** — 7 built-in tools (HTTP, webhook, n8n, SQL, GitHub, calculator, datetime) with a human-approval gate
+- 📚 **RAG Knowledge Hub** — upload PDF/TXT/MD, semantic search with embeddings
+- ⚡ **Visual Workflow Builder** — React Flow drag-and-drop agent/tool pipelines
+- 🧠 **Long-term Memory** — agents recall relevant past interactions automatically
+- 📊 **Observability** — token usage, latency, error tracking dashboard
+- 🛡️ **Security** — workspace RBAC (Owner/Admin/Member/Viewer) + audit log
+- 👥 **AI Meeting** — multiple agents discuss a topic and produce a summary
 
 ---
 
-## 🏛️ System Architecture
+## 🧱 Tech Stack
 
-```
-Next.js 3D Office (Frontend)
-         ↓
-  FastAPI Gateway (REST + WebSocket)
-         ↓
-  LangGraph Runtime
-         ↓
-     Agent Layer
-    ┌────┴────────────┐
-    │   Tool Layer    │
-    ├─ RAG            │
-    ├─ SQL            │
-    ├─ MCP            │
-    ├─ n8n            │
-    ├─ GitHub         │
-    ├─ SharePoint     │
-    └─ APIs           │
-         ↓
-   Memory Layer
-         ↓
-PostgreSQL / pgvector / Redis
-```
+| Layer | Tech |
+|-------|------|
+| **Frontend** | Next.js 15, TypeScript, TailwindCSS, Zustand, React Flow |
+| **Office Game** | Phaser 3.90 (2D RPG renderer) |
+| **Backend** | FastAPI, SQLAlchemy (async), LangGraph, LangChain |
+| **AI / LLM** | OpenAI · Gemini · OpenRouter · Ollama (auto-detected; graceful fallback with no key) |
+| **Database** | PostgreSQL 16 (embeddings stored as JSON — no pgvector required) |
+| **Realtime** | WebSocket + Server-Sent Events |
 
 ---
 
-## 🗺️ Roadmap
-
-| Phase | Feature | Status |
-|-------|---------|--------|
-| 1 | Foundation (Auth, DB, API, WebSocket) | ✅ Done |
-| 2 | 3D Office Engine (Three.js, Rooms, Avatars) | 🔄 Next |
-| 3 | Chat + Realtime System | ⏳ Planned |
-| 4 | Multi-Agent Core (LangGraph) | ⏳ Planned |
-| 5 | Tool System (SQL, MCP, n8n, GitHub) | ⏳ Planned |
-| 6 | RAG & Knowledge Hub | ⏳ Planned |
-| 7 | Workflow Builder (React Flow) | ⏳ Planned |
-| 8 | Office Builder (Drag & Drop) | ⏳ Planned |
-| 9 | Memory System | ⏳ Planned |
-| 10 | Observability & Monitoring | ⏳ Planned |
-| 11 | Security & Enterprise (RBAC, SSO) | ⏳ Planned |
-| 12 | Advanced AI (Autonomous, Voice) | ⏳ Planned |
-
----
-
-## 📁 Project Structure
+## 🗂️ Project Structure
 
 ```
 ai-office-os/
-├── frontend/                   # Next.js 15 app
-│   └── src/
-│       ├── app/                # Pages (login, register, dashboard, office...)
-│       ├── components/         # UI components + layout
-│       ├── store/              # Zustand state (auth, workspace)
-│       └── lib/                # API client, utilities
-│
-├── backend/                    # FastAPI app
+├── backend/                      # FastAPI app
 │   └── app/
-│       ├── main.py             # Entry point
-│       ├── core/               # Config, database, security, redis
-│       ├── models/             # SQLAlchemy models
-│       ├── schemas/            # Pydantic schemas
-│       ├── api/v1/             # REST endpoints
-│       └── websocket/          # WebSocket manager
-│
-├── docker-compose.yml          # All services
-├── .env.example                # Environment template
-└── README.md
+│       ├── main.py               # entry point, routers
+│       ├── core/                 # config, db, security, rbac
+│       ├── models/               # 18 SQLAlchemy models
+│       ├── api/v1/               # auth, agents, tools, knowledge,
+│       │                         #   workflows, memories, meetings,
+│       │                         #   observability, audit, …
+│       ├── agents/               # LangGraph runtime (graph, prompts, tools, llm)
+│       ├── tools/                # tool registry + built-ins
+│       ├── rag/                  # embeddings, knowledge search, memory
+│       └── observability/        # usage tracker
+├── frontend/                     # Next.js app
+│   ├── public/assets/            # game sprites (maps, furniture, characters)
+│   └── src/
+│       ├── app/(dashboard)/      # 13 pages
+│       ├── components/phaser/    # Phaser office scene + editor bridge
+│       └── store/                # Zustand stores
+├── tools/                        # PIL asset generators + e2e_test.ps1
+└── docs/                         # master plan + reference art
 ```
 
 ---
 
-## 🚀 Getting Started
+## 🚀 Getting Started (Windows, local — no Docker)
+
+> The project also ships a `docker-compose.yml`, but the documented dev flow runs everything locally.
 
 ### Prerequisites
+- Node.js 20+, Python 3.12+
+- PostgreSQL 16 (+ Redis optional). Create db `aioffice_db`, user `aioffice` / `aioffice_secret`.
 
-- [Docker Desktop](https://www.docker.com/products/docker-desktop/)
-- Node.js 20+
-- Python 3.12+
-
-### 1. Clone & Configure
-
-```bash
-git clone https://github.com/your-username/ai-office-os.git
-cd ai-office-os
-
-cp .env.example .env
-# Edit .env — fill in your API keys and secrets
-```
-
-### 2. Start with Docker (Recommended)
-
-```bash
-docker compose up -d
-```
-
-Services will be available at:
-- **Frontend** → http://localhost:3000
-- **Backend API** → http://localhost:8000
-- **API Docs** → http://localhost:8000/docs
-
-### 3. Local Development (Alternative)
-
-**Backend:**
+### Backend
 ```bash
 cd backend
 python -m venv .venv
-.venv\Scripts\activate        # Windows
-# source .venv/bin/activate   # Mac/Linux
-
+.venv\Scripts\activate
 pip install -r requirements.txt
-
-# Run migrations
+copy ..\.env .env          # fill in LLM keys (optional)
 alembic upgrade head
-
-# Start dev server
-uvicorn app.main:app --reload
+uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-**Frontend:**
+### Frontend
 ```bash
 cd frontend
-npm install
+npm install --legacy-peer-deps
 npm run dev
 ```
 
+Open **http://localhost:3000** — API docs at **http://localhost:8000/docs**.
+
+### First login
+Register a user, **or** use the seeded test account:
+
+| Email | Password |
+|-------|----------|
+| `admin@example.com` | `Admin1234!` |
+
+(The login page has a one-click "Test Account" button.)
+
 ---
 
-## 🔑 Environment Variables
+## 🔑 Environment (`backend/.env`)
 
-Copy `.env.example` to `.env` and configure:
+| Variable | Purpose | Required |
+|----------|---------|----------|
+| `DATABASE_URL` | Postgres async URL | ✅ |
+| `SECRET_KEY` | JWT signing | ✅ |
+| `OPENAI_API_KEY` | OpenAI (chat + embeddings) | optional |
+| `GEMINI_API_KEY` / `OPENROUTER_API_KEY` | other providers | optional |
+| `OLLAMA_BASE_URL` | local LLM | optional |
 
-| Variable | Description | Required |
-|----------|-------------|----------|
-| `POSTGRES_PASSWORD` | PostgreSQL password | ✅ |
-| `SECRET_KEY` | JWT signing key (random string) | ✅ |
-| `OPENAI_API_KEY` | OpenAI API key | Optional |
-| `GEMINI_API_KEY` | Google Gemini API key | Optional |
-| `OPENROUTER_API_KEY` | OpenRouter API key | Optional |
-| `OLLAMA_BASE_URL` | Ollama server URL | Optional |
+Without any LLM key, agents return a friendly fallback and embeddings use a deterministic local hash — the app still runs end-to-end.
 
 ---
 
 ## 🤖 Default Agents
 
-| Agent | Room | Role |
+| Agent | Role | Room |
 |-------|------|------|
-| Reception | Lobby | Greet users, route requests |
-| PM | CEO Room | Project planning, task delegation |
-| BA | BA Room | Requirements analysis |
-| Developer | Dev Room | Code generation, review |
-| DBA | DBA Room | Database queries, optimization |
-| QA | QA Room | Testing, validation |
-| RAG | Library | Knowledge retrieval |
+| Alex (Reception) | greet & route | Lobby |
+| Victor (PM/CEO) | planning, priorities | CEO Room |
+| Bailey (BA) | requirements, specs | BA Room |
+| Dev | code, architecture | Dev Room |
+| Dana (DBA) | schemas, SQL | DBA Room |
+| Quinn (QA) | testing, bugs | QA Room |
+| Sage (RAG) | knowledge retrieval | Library |
 
 ---
 
-## 🗄️ Database Schema
+## 🎮 Office Editor
 
-Core tables:
+Open **Office → "แก้ไข Office"**:
+- **Background** — upload any image (live swap, agents stay)
+- **Furniture** — 16 generated presets + upload your own; editable catalog (rename / replace image / delete); drag to place; **collision** (agents walk around furniture)
+- **Characters** — upload a sprite sheet per agent (RPG-Maker `cols×4 rows` = down/left/right/up → agents face their walking direction)
 
+---
+
+## 🧪 Testing
+
+End-to-end smoke test (backend must be running):
+
+```powershell
+pwsh tools/e2e_test.ps1
 ```
-users              workspaces         offices
-workspace_members  rooms              office_objects
-agents             conversations      messages
-tasks              documents          document_chunks
-embeddings         memories           audit_logs
-```
+
+Covers auth, agents, tools, RAG, memory, workflows, observability, RBAC, audit, team — **16/16 passing**.
 
 ---
 
 ## 📡 API Overview
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/v1/auth/register` | Register new user |
-| POST | `/api/v1/auth/login` | Login |
-| POST | `/api/v1/auth/refresh` | Refresh token |
-| GET | `/api/v1/auth/me` | Current user |
-| GET | `/api/v1/workspaces` | List workspaces |
-| POST | `/api/v1/workspaces` | Create workspace |
-| GET | `/api/v1/health` | Health check |
-| WS | `/ws/{workspace_id}?token=...` | WebSocket connection |
+`/api/v1/` — `auth` · `workspaces` (+members) · `agents` · `offices` · `conversations` (chat + SSE) · `tools` · `knowledge` · `workflows` · `memories` · `meetings` · `observability` · `audit` · `uploads` · `seed` · WebSocket `/ws/{workspace_id}`
 
-Full API docs: http://localhost:8000/docs
+Full interactive docs: **http://localhost:8000/docs**
 
 ---
 
-## 🐳 Docker Services
+## 🗺️ Roadmap — all 12 phases shipped ✅
 
-| Service | Image | Port |
-|---------|-------|------|
-| postgres | pgvector/pgvector:pg16 | 5432 |
-| redis | redis:7-alpine | 6379 |
-| backend | (local build) | 8000 |
-| frontend | (local build) | 3000 |
-
----
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create a feature branch: `git checkout -b feature/your-feature`
-3. Commit changes: `git commit -m "feat: add your feature"`
-4. Push: `git push origin feature/your-feature`
-5. Open a Pull Request
+| Phase | Feature | Status |
+|-------|---------|--------|
+| 1 | Foundation (auth, DB, API, WS) | ✅ |
+| 2–3 | Office world + realtime chat | ✅ |
+| 4 | Multi-agent core (LangGraph) | ✅ |
+| 5 | Tool system | ✅ |
+| 6 | RAG & Knowledge Hub | ✅ |
+| 7 | Visual Workflow Builder | ✅ |
+| 8 | Office Builder (Phaser editor) | ✅ |
+| 9 | Memory system | ✅ |
+| 10 | Observability | ✅ |
+| 11 | Security (RBAC + audit) | ✅ |
+| 12 | Advanced AI (AI Meeting) | ✅ |
 
 ---
 
 ## 📄 License
 
-MIT License — see [LICENSE](LICENSE) for details.
+MIT
 
----
-
-<div align="center">
-  <strong>Built with ❤️ for the AI-first future</strong>
-</div>
+<div align="center"><sub>Built with ❤️ — an Operating System for your AI workforce</sub></div>
