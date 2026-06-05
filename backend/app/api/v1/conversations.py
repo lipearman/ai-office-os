@@ -122,6 +122,14 @@ async def send_message(
     history = [{"role": m.role.value if hasattr(m.role, 'value') else m.role, "content": m.content}
                for m in conv.messages if m.role != MessageRole.SYSTEM]
 
+    # Recall relevant long-term memory
+    from app.rag.memory import recall, store_memory, format_memories
+    recalled = await recall(
+        db, str(conv.workspace_id), data.content,
+        agent_id=str(agent.id) if agent else None, top_k=3,
+    )
+    memory_context = format_memories(recalled)
+
     from app.agents.runtime import run_agent
     reply_text = await run_agent(
         user_message=data.content,
@@ -132,12 +140,22 @@ async def send_message(
         user_id=str(current_user.id),
         conversation_id=str(conv.id),
         history=history,
+        memory_context=memory_context,
     )
 
     assistant_msg = Message(conversation_id=conv.id, role=MessageRole.ASSISTANT, content=reply_text)
     db.add(assistant_msg)
     if agent:
         agent.status = AgentStatus.IDLE
+
+    # Store this exchange as long-term memory (recall by the user's question)
+    await store_memory(
+        db, str(conv.workspace_id),
+        content=f"Q: {data.content}\nA: {reply_text[:500]}",
+        embed_source=data.content, kind="exchange",
+        agent_id=str(agent.id) if agent else None,
+        user_id=str(current_user.id), conversation_id=str(conv.id),
+    )
     await db.flush()
 
     # Broadcast idle status

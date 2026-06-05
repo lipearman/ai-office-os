@@ -14,6 +14,7 @@ import {
   LogOut,
   Building2,
   Wrench,
+  Brain,
 } from "lucide-react";
 
 const navItems = [
@@ -23,6 +24,7 @@ const navItems = [
   { href: "/tools", icon: Wrench, label: "Tools" },
   { href: "/workflows", icon: Workflow, label: "Workflows" },
   { href: "/knowledge", icon: BookOpen, label: "Knowledge" },
+  { href: "/memory", icon: Brain, label: "Memory" },
   { href: "/team", icon: Users, label: "Team" },
   { href: "/settings", icon: Settings, label: "Settings" },
 ];

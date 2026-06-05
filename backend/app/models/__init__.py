@@ -6,6 +6,7 @@ from app.models.conversation import Conversation, Message, Task
 from app.models.tool import ToolLog, ToolStatus
 from app.models.document import Document, DocumentChunk
 from app.models.workflow import Workflow, WorkflowRun
+from app.models.memory import Memory
 
 __all__ = [
     "User", "UserRole",
@@ -16,4 +17,5 @@ __all__ = [
     "ToolLog", "ToolStatus",
     "Document", "DocumentChunk",
     "Workflow", "WorkflowRun",
+    "Memory",
 ]

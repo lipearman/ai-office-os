@@ -14,12 +14,15 @@ async def run_agent(
     user_id: str,
     conversation_id: str,
     history: list[dict],
+    memory_context: str = "",
 ) -> str:
     """Run the multi-agent graph and return the AI reply."""
     graph = get_graph()
 
     # Build message history
     lc_messages = []
+    if memory_context:
+        lc_messages.append(SystemMessage(content=memory_context))
     for msg in history[-12:]:  # last 12 messages for context
         role = msg.get("role", "")
         content = msg.get("content", "")
@@ -65,6 +68,7 @@ async def stream_agent(
     user_id: str,
     conversation_id: str,
     history: list[dict],
+    memory_context: str = "",
 ):
     """Stream agent response token by token."""
     from app.agents.llm import get_llm
@@ -75,6 +79,8 @@ async def stream_agent(
     llm = get_llm()
 
     lc_messages = [SystemMessage(content=system_prompt)]
+    if memory_context:
+        lc_messages.append(SystemMessage(content=memory_context))
     for msg in history[-12:]:
         role = msg.get("role", "")
         content = msg.get("content", "")
