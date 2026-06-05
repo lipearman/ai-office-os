@@ -72,7 +72,22 @@ export default function WorkflowsPage() {
   const openWorkflow = async (id: string) => {
     const { data } = await api.get(`/workflows/${id}`);
     setActiveId(id); setName(data.name);
-    setNodes(data.nodes || []); setEdges(data.edges || []);
+    // sanitize: React Flow requires position {x,y} + data on every node
+    const nodes = (data.nodes || []).map((n: any, i: number) => {
+      const kind = n.data?.kind ?? n.type ?? "agent";
+      const s = KIND_STYLE[kind] ?? KIND_STYLE.agent;
+      return {
+        id: n.id ?? `n${i}`,
+        position: n.position && typeof n.position.x === "number"
+          ? n.position : { x: 80 + i * 180, y: 160 },
+        data: { kind, label: n.data?.label ?? `${s.emoji} ${s.label}`, ...(n.data ?? {}) },
+        style: n.style ?? {
+          background: s.bg + "22", border: `2px solid ${s.bg}`, color: "#fff",
+          borderRadius: 10, padding: "8px 14px", fontSize: 12, fontWeight: 600, minWidth: 110,
+        },
+      };
+    });
+    setNodes(nodes); setEdges(data.edges || []);
     setSelected(null); setRunResult(null);
   };
 
