@@ -121,7 +121,16 @@ export default function PhaserOffice({ agents, officeName }: Props) {
       gameRef.current = null;
       sceneRef.current = null;
     };
+    // Boot ONCE on mount — never recreate the game (keeps agents alive)
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Background change → swap live in the scene (no recreate, agents stay)
+  const bgFirst = useRef(true);
+  useEffect(() => {
+    if (bgFirst.current) { bgFirst.current = false; return; }
+    const url = backgroundUrl || "/assets/maps/office_floor.png";
+    sceneRef.current?.changeBackground?.(url);
   }, [backgroundUrl]);
 
   // Agent click → panel

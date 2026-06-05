@@ -220,15 +220,33 @@ export class OfficeScene extends Phaser.Scene {
   }
 
   // ── Collision via background pixel brightness ──────────────────────────────
-  private buildCollision() {
-    const tex = this.textures.get(this.cfg.bgKey);
-    const src = tex.getSourceImage() as HTMLImageElement;
+  private buildCollision(key: string = this.cfg.bgKey) {
+    const tex = this.textures.get(key);
+    const src = tex?.getSourceImage() as HTMLImageElement | undefined;
+    if (!src) { this.collisionCtx = undefined; return; }
     const c = document.createElement("canvas");
     c.width = src.width; c.height = src.height;
     const ctx = c.getContext("2d", { willReadFrequently: true })!;
     ctx.drawImage(src, 0, 0);
     this.collisionCanvas = c;
     this.collisionCtx = ctx;
+  }
+
+  /** Swap the background live without recreating the scene (keeps agents). */
+  changeBackground(url: string) {
+    const key = "bg_" + url.replace(/[^a-z0-9]/gi, "_");
+    const apply = () => {
+      const W = this.scale.width, H = this.scale.height;
+      this.bg?.destroy();
+      this.bg = this.add.image(W / 2, H / 2, key).setDisplaySize(W, H).setDepth(0);
+      this.buildCollision(key);
+    };
+    if (this.textures.exists(key)) apply();
+    else {
+      this.load.image(key, url);
+      this.load.once("complete", apply);
+      this.load.start();
+    }
   }
 
   private walkable(worldX: number, worldY: number): boolean {
