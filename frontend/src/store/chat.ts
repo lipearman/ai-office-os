@@ -57,7 +57,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   openOrCreate: async (agentId, workspaceId) => {
     // Reuse existing open conversation with this agent
     const existing = get().conversations.find(
-      (c) => c.agent_id === agentId && c.status === "active"
+      (c) => c.agent_id === agentId && c.status.toUpperCase() === "ACTIVE"
     );
     if (existing) {
       set({ activeId: existing.id });
