@@ -11,21 +11,31 @@ const config: Config = {
       colors: {
         background: "var(--background)",
         foreground: "var(--foreground)",
+        // Phaser-inspired brand: hot pink / magenta
         primary: {
-          DEFAULT: "#6366f1",
+          DEFAULT: "#ff2d75",
           foreground: "#ffffff",
-          50: "#eef2ff",
-          100: "#e0e7ff",
-          500: "#6366f1",
-          600: "#4f46e5",
-          700: "#4338ca",
+          50: "#fff0f5",
+          100: "#ffe0eb",
+          200: "#ffc2d8",
+          300: "#ff94b8",
+          400: "#ff5c93",
+          500: "#ff2d75",
+          600: "#e60a5c",
+          700: "#c00049",
+          800: "#990039",
+        },
+        // secondary accent: cyan (PhaserPunk neon)
+        accent: {
+          DEFAULT: "#22d3ee",
+          400: "#22d3ee",
+          500: "#06b6d4",
         },
         surface: {
-          DEFAULT: "#1e1e2e",
-          50: "#313244",
-          100: "#45475a",
+          DEFAULT: "#1c1830",
+          50: "#272138",
+          100: "#332b48",
         },
-        accent: "#f5c2e7",
       },
       fontFamily: {
         sans: ["var(--font-geist-sans)", "system-ui", "sans-serif"],

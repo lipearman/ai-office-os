@@ -46,7 +46,7 @@ export function ChatPanel({ open, onClose }: ChatPanelProps) {
 
   return (
     <div className={cn(
-      "fixed right-0 top-0 bottom-0 z-50 flex w-[440px] flex-col bg-[#0d0d1f]/96 border-l border-white/8 backdrop-blur-xl shadow-2xl transition-transform duration-300",
+      "fixed right-0 top-0 bottom-0 z-50 flex w-[440px] flex-col bg-[#16131f]/96 border-l border-white/8 backdrop-blur-xl shadow-2xl transition-transform duration-300",
       open ? "translate-x-0" : "translate-x-full"
     )}>
       {/* Header */}

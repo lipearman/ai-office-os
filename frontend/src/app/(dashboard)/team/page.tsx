@@ -38,14 +38,14 @@ export default function TeamPage() {
   };
 
   return (
-    <div className="animate-fade-in max-w-3xl">
+    <div className="animate-fade-in mx-auto w-full max-w-3xl">
       <div className="mb-6">
         <h1 className="text-2xl font-bold text-white flex items-center gap-2"><Users size={22}/> Team</h1>
         <p className="text-white/40 text-sm mt-1">จัดการสมาชิก workspace + role — {members.length} คน</p>
       </div>
 
       {/* Invite */}
-      <div className="rounded-xl border border-white/8 bg-white/3 p-4 mb-6">
+      <div className="rounded-xl border border-white/8 bg-[#141228]/70 backdrop-blur-md p-4 mb-6">
         <p className="text-xs text-white/50 mb-2">เพิ่มสมาชิก (ต้องมี user ในระบบแล้ว)</p>
         <div className="flex gap-2">
           <input value={email} onChange={(e)=>setEmail(e.target.value)} placeholder="email@example.com"
@@ -62,7 +62,7 @@ export default function TeamPage() {
       {/* Member list */}
       <div className="space-y-2">
         {members.map((m) => (
-          <div key={m.id} className="flex items-center gap-3 rounded-xl border border-white/8 bg-white/3 p-3">
+          <div key={m.id} className="flex items-center gap-3 rounded-xl border border-white/8 bg-[#141228]/70 backdrop-blur-md p-3">
             <div className="flex h-9 w-9 items-center justify-center rounded-full bg-primary-600/30 text-sm font-semibold text-primary-200">
               {m.name?.[0]?.toUpperCase() ?? "?"}
             </div>

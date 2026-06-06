@@ -54,7 +54,7 @@ export default function DashboardPage() {
   const maxTok = Math.max(1, ...(d.series ?? []).map((s: any) => s.tokens));
 
   return (
-    <div className="animate-fade-in max-w-5xl">
+    <div className="animate-fade-in mx-auto w-full max-w-6xl">
       <div className="mb-8">
         <h1 className="text-2xl font-bold text-white">Welcome back, {user?.full_name?.split(" ")[0]} 👋</h1>
         <p className="text-white/40 text-sm mt-1">{current ? `Workspace: ${current.name}` : "No workspace yet"}</p>
@@ -64,7 +64,7 @@ export default function DashboardPage() {
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4 mb-6">
         {stats.map(({ label, value, icon: Icon, color, href }) => (
           <Link key={label} href={href}
-            className="rounded-xl border border-white/5 bg-white/3 p-4 hover:border-white/15 transition-all">
+            className="rounded-xl border border-white/10 bg-[#141228]/70 backdrop-blur-md p-4 hover:border-white/15 transition-all">
             <div className="flex items-center justify-between mb-2">
               <span className="text-xs text-white/40 font-medium">{label}</span>
               <div className="rounded-lg p-1.5" style={{ background: color + "1a" }}><Icon size={14} style={{ color }} /></div>
@@ -76,7 +76,7 @@ export default function DashboardPage() {
 
       <div className="grid lg:grid-cols-2 gap-4 mb-6">
         {/* Mini token chart */}
-        <div className="rounded-xl border border-white/5 bg-white/3 p-5">
+        <div className="rounded-xl border border-white/10 bg-[#141228]/70 backdrop-blur-md p-5">
           <p className="text-sm font-semibold text-white/70 mb-4">Token Usage (7d)</p>
           <div className="flex items-end gap-1.5 h-28">
             {(d.series ?? []).map((s: any) => (
@@ -91,7 +91,7 @@ export default function DashboardPage() {
         </div>
 
         {/* Recent activity */}
-        <div className="rounded-xl border border-white/5 bg-white/3 p-5">
+        <div className="rounded-xl border border-white/10 bg-[#141228]/70 backdrop-blur-md p-5">
           <p className="text-sm font-semibold text-white/70 mb-3">Recent Activity</p>
           <div className="space-y-1.5">
             {(d.audit ?? []).slice(0, 6).map((a: any) => (
@@ -108,7 +108,7 @@ export default function DashboardPage() {
       </div>
 
       {/* Quick Actions */}
-      <div className="rounded-xl border border-white/5 bg-white/3 p-6">
+      <div className="rounded-xl border border-white/10 bg-[#141228]/70 backdrop-blur-md p-6">
         <h2 className="text-sm font-semibold text-white/70 mb-4">Quick Actions</h2>
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
           {[
@@ -119,7 +119,7 @@ export default function DashboardPage() {
             { label: "Tools", emoji: "🔧", href: "/tools" },
           ].map((action) => (
             <Link key={action.label} href={action.href}
-              className="flex flex-col items-center gap-2 rounded-xl border border-white/5 bg-white/3 p-4 hover:border-primary-500/30 hover:bg-primary-600/10 transition-all">
+              className="flex flex-col items-center gap-2 rounded-xl border border-white/10 bg-[#141228]/70 backdrop-blur-md p-4 hover:border-primary-500/30 hover:bg-primary-600/10 transition-all">
               <span className="text-2xl">{action.emoji}</span>
               <span className="text-xs font-medium text-white/60">{action.label}</span>
             </Link>

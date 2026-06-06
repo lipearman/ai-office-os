@@ -31,7 +31,7 @@ function AgentCard({
   return (
     <button
       onClick={onClick}
-      className="w-full flex items-center gap-3 rounded-xl border border-white/5 bg-white/3 p-3 text-left hover:border-white/15 hover:bg-white/6 transition-all"
+      className="w-full flex items-center gap-3 rounded-xl border border-white/10 bg-[#141228]/70 backdrop-blur-md p-3 text-left hover:border-white/15 hover:bg-white/6 transition-all"
     >
       <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white/10 text-lg">
         {AGENT_EMOJI[agent.agent_type] ?? "🤖"}

@@ -20,7 +20,7 @@ export default function SecurityPage() {
   }, [current]);
 
   return (
-    <div className="animate-fade-in max-w-4xl">
+    <div className="animate-fade-in mx-auto w-full max-w-4xl">
       <div className="mb-6 flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-white flex items-center gap-2"><Shield size={22}/> Security & Audit</h1>
@@ -43,7 +43,7 @@ export default function SecurityPage() {
           { r: "MEMBER", d: "ใช้งาน + ลบ knowledge" },
           { r: "VIEWER", d: "ดูอย่างเดียว" },
         ].map(({ r, d }) => (
-          <div key={r} className="rounded-xl border border-white/5 bg-white/3 p-3">
+          <div key={r} className="rounded-xl border border-white/10 bg-[#141228]/70 backdrop-blur-md p-3">
             <span className="text-xs font-bold" style={{ color: ROLE_COLOR[r] }}>{r}</span>
             <p className="text-[11px] text-white/40 mt-1">{d}</p>
           </div>
@@ -51,12 +51,12 @@ export default function SecurityPage() {
       </div>
 
       {/* Audit log */}
-      <div className="rounded-xl border border-white/5 bg-white/3 p-5">
+      <div className="rounded-xl border border-white/10 bg-[#141228]/70 backdrop-blur-md p-5">
         <p className="text-sm font-semibold text-white/70 mb-3">Audit Log</p>
         <div className="space-y-1">
           {logs.length === 0 && <p className="text-xs text-white/30">ยังไม่มีบันทึก — ลองรัน tool หรือลบเอกสาร</p>}
           {logs.map((l) => (
-            <div key={l.id} className="flex items-center gap-3 rounded-lg border border-white/5 bg-white/3 px-3 py-2 text-xs">
+            <div key={l.id} className="flex items-center gap-3 rounded-lg border border-white/10 bg-[#141228]/70 backdrop-blur-md px-3 py-2 text-xs">
               <span className="h-2 w-2 rounded-full shrink-0" style={{ background: STATUS_COLOR[l.status] ?? "#6b7280" }} />
               <span className="font-mono text-white/80 w-32">{l.action}</span>
               <span className="text-white/50 flex-1 truncate">{l.actor ?? "—"}{l.target_id ? ` · ${l.target_type}:${l.target_id.slice(0,8)}` : ""}</span>

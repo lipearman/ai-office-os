@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuthStore } from "@/store/auth";
 import { useWorkspaceStore } from "@/store/workspace";
-import { Sidebar } from "@/components/layout/sidebar";
+import { TopBar } from "@/components/layout/topbar";
 import { ChatPanel } from "@/components/chat/ChatPanel";
 import { NotificationStack } from "@/components/notifications/NotificationStack";
 import { WSProvider } from "@/components/providers/WSProvider";
@@ -31,8 +31,8 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
   }, []);
 
   return (
-    <div className="flex h-screen overflow-hidden bg-[#0f0f1a]">
-      <Sidebar />
+    <div className="flex h-screen flex-col overflow-hidden bg-transparent">
+      <TopBar />
 
       <main className="relative flex-1 overflow-auto p-6">
         {children}

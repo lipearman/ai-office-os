@@ -23,13 +23,23 @@ export interface FurnitureSpawn {
   id: string; url: string; x: number; y: number; w: number; h: number;
 }
 
+export interface OfficeSettings {
+  charScale: number;   // 0.5 – 2  (multiplier on the ~84px base height)
+  walkSpeed: number;   // px / second
+  showLabels: boolean; // name tags above agents
+  collision: boolean;  // walls + furniture block movement
+}
+
 export interface SceneData {
   bgKey: string;
   bgUrl: string;
   sprites: SpriteMeta[];
   agents: AgentSpawn[];
   furniture?: FurnitureSpawn[];
+  settings?: Partial<OfficeSettings>;
 }
+
+const BASE_CHAR_H = 84;
 
 const DIR_ROW = { down: 0, left: 1, right: 2, up: 3 } as const;
 type Dir = keyof typeof DIR_ROW;
@@ -56,9 +66,24 @@ export class OfficeScene extends Phaser.Scene {
   private editorMode = false;
   private furniture = new Map<string, Phaser.GameObjects.Image>();
 
+  // adjustable "values" (driven from the editor → Settings tab)
+  private charScale = 1;
+  private baseSpeed = 95;
+  private showLabels = true;
+  private collisionEnabled = true;
+
   constructor() { super({ key: "OfficeScene" }); }
 
-  init(data: SceneData) { this.cfg = data; }
+  init(data: SceneData) {
+    this.cfg = data;
+    const s = data.settings;
+    if (s) {
+      this.charScale = s.charScale ?? this.charScale;
+      this.baseSpeed = s.walkSpeed ?? this.baseSpeed;
+      this.showLabels = s.showLabels ?? this.showLabels;
+      this.collisionEnabled = s.collision ?? this.collisionEnabled;
+    }
+  }
 
   preload() {
     this.load.image(this.cfg.bgKey, this.cfg.bgUrl);
@@ -131,9 +156,9 @@ export class OfficeScene extends Phaser.Scene {
     const meta = this.cfg.sprites.find((s) => s.key === a.spriteKey);
     const idleFrame = meta ? Math.min(1, meta.cols - 1) : 0; // middle-ish of down row
     const sprite = this.add.sprite(x, y, a.spriteKey, idleFrame).setDepth(10);
-    // Scale to a consistent on-screen height (~80px)
+    // Scale to a consistent on-screen height (~84px × user scale)
     if (meta) {
-      const targetH = 84;
+      const targetH = BASE_CHAR_H * this.charScale;
       sprite.setScale(targetH / meta.frameH);
     }
     sprite.setInteractive({ useHandCursor: true });
@@ -147,11 +172,11 @@ export class OfficeScene extends Phaser.Scene {
     const label = this.add.text(x, y - sprite.displayHeight / 2 - 14, a.name, {
       fontSize: "12px", color: "#ffffff", fontFamily: "system-ui",
       backgroundColor: a.color + "cc", padding: { x: 6, y: 2 },
-    }).setOrigin(0.5).setDepth(11);
+    }).setOrigin(0.5).setDepth(11).setVisible(this.showLabels);
 
     this.agents.push({
       sprite, label, data: a,
-      target: { x, y }, dir: "down", speed: 95,
+      target: { x, y }, dir: "down", speed: this.baseSpeed,
       nextWander: this.time.now + 1000 + Math.random() * 2000,
     });
   }
@@ -258,7 +283,7 @@ export class OfficeScene extends Phaser.Scene {
       if (a) {
         a.data.spriteKey = meta.key;
         a.sprite.setTexture(meta.key, Math.min(1, meta.cols - 1));
-        a.sprite.setScale(84 / meta.frameH);
+        a.sprite.setScale((BASE_CHAR_H * this.charScale) / meta.frameH);
       }
     };
     if (this.textures.exists(meta.key)) apply();
@@ -287,6 +312,7 @@ export class OfficeScene extends Phaser.Scene {
   }
 
   private walkable(worldX: number, worldY: number): boolean {
+    if (!this.collisionEnabled) return true; // collision disabled → walk anywhere
     // furniture footprints block movement (agents walk around them)
     if (!this.editorMode && this.furnitureBlocks(worldX, worldY)) return false;
 
@@ -372,5 +398,32 @@ export class OfficeScene extends Phaser.Scene {
       if (ex) { ex.setPosition(f.x, f.y).setDisplaySize(f.w, f.h); }
       else this.spawnFurniture(f);
     }
+  }
+
+  // ── Adjustable values (Settings tab) ─────────────────────────────────────────
+  /** Resize every agent (multiplier on the ~84px base height). */
+  setCharScale(scale: number) {
+    this.charScale = scale;
+    for (const a of this.agents) {
+      const meta = this.cfg.sprites.find((s) => s.key === a.data.spriteKey);
+      if (meta) a.sprite.setScale((BASE_CHAR_H * scale) / meta.frameH);
+    }
+  }
+
+  /** Set walking speed (px/s) for all agents + future spawns. */
+  setWalkSpeed(v: number) {
+    this.baseSpeed = v;
+    for (const a of this.agents) a.speed = v;
+  }
+
+  /** Toggle the name tags above agents. */
+  setShowLabels(on: boolean) {
+    this.showLabels = on;
+    for (const a of this.agents) a.label.setVisible(on);
+  }
+
+  /** Toggle wall + furniture collision. */
+  setCollision(on: boolean) {
+    this.collisionEnabled = on;
   }
 }

@@ -60,7 +60,7 @@ export default function ToolsPage() {
   };
 
   return (
-    <div className="animate-fade-in max-w-5xl">
+    <div className="animate-fade-in mx-auto w-full max-w-6xl">
       <div className="mb-6">
         <h1 className="text-2xl font-bold text-white">🔧 Tools</h1>
         <p className="text-white/40 text-sm mt-1">รัน tools / เชื่อม external services — {tools.length} tools</p>
@@ -71,10 +71,10 @@ export default function ToolsPage() {
           const isOpen = open === t.name;
           const color = CAT_COLOR[t.category] ?? "#6366f1";
           return (
-            <div key={t.name} className="rounded-xl border border-white/8 bg-white/3 overflow-hidden">
+            <div key={t.name} className="rounded-xl border border-white/8 bg-[#141228]/70 backdrop-blur-md overflow-hidden">
               <button
                 onClick={() => setOpen(isOpen ? null : t.name)}
-                className="w-full flex items-center gap-3 p-4 text-left hover:bg-white/3"
+                className="w-full flex items-center gap-3 p-4 text-left hover:bg-[#141228]/70 backdrop-blur-md"
               >
                 <span className="text-xl">{t.icon}</span>
                 <div className="flex-1 min-w-0">
@@ -139,7 +139,7 @@ export default function ToolsPage() {
         <div className="space-y-1.5">
           {logs.length === 0 && <p className="text-xs text-white/30">ยังไม่มีประวัติ</p>}
           {logs.map((l) => (
-            <div key={l.id} className="flex items-center gap-3 rounded-lg border border-white/5 bg-white/3 px-3 py-2 text-xs">
+            <div key={l.id} className="flex items-center gap-3 rounded-lg border border-white/10 bg-[#141228]/70 backdrop-blur-md px-3 py-2 text-xs">
               <span className={cn("h-2 w-2 rounded-full shrink-0",
                 l.status === "SUCCESS" ? "bg-green-400" : l.status === "PENDING_APPROVAL" ? "bg-yellow-400" : "bg-red-400")} />
               <span className="font-mono text-white/80">{l.tool_name}</span>

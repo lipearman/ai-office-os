@@ -1,6 +1,6 @@
 from app.models.user import User, UserRole
 from app.models.workspace import Workspace, WorkspaceMember, WorkspaceRole
-from app.models.office import Office, Room, OfficeObject
+from app.models.office import Office, Room, OfficeObject, OfficeTemplate
 from app.models.agent import Agent, AgentStatus
 from app.models.conversation import Conversation, Message, Task
 from app.models.tool import ToolLog, ToolStatus
@@ -13,7 +13,7 @@ from app.models.audit import AuditLog
 __all__ = [
     "User", "UserRole",
     "Workspace", "WorkspaceMember", "WorkspaceRole",
-    "Office", "Room", "OfficeObject",
+    "Office", "Room", "OfficeObject", "OfficeTemplate",
     "Agent", "AgentStatus",
     "Conversation", "Message", "Task",
     "ToolLog", "ToolStatus",

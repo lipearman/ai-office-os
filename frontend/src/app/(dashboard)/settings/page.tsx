@@ -26,14 +26,14 @@ export default function SettingsPage() {
   };
 
   return (
-    <div className="animate-fade-in max-w-2xl">
+    <div className="animate-fade-in mx-auto w-full max-w-2xl">
       <div className="mb-6">
         <h1 className="text-2xl font-bold text-white flex items-center gap-2"><SettingsIcon size={22}/> Settings</h1>
         <p className="text-white/40 text-sm mt-1">ตั้งค่า workspace + บัญชี</p>
       </div>
 
       {/* Workspace */}
-      <div className="rounded-xl border border-white/8 bg-white/3 p-5 mb-5 space-y-4">
+      <div className="rounded-xl border border-white/8 bg-[#141228]/70 backdrop-blur-md p-5 mb-5 space-y-4">
         <p className="text-sm font-semibold text-white/70">Workspace</p>
         <div>
           <label className="text-xs text-white/50 mb-1 block">ชื่อ</label>
@@ -50,7 +50,7 @@ export default function SettingsPage() {
       </div>
 
       {/* Account */}
-      <div className="rounded-xl border border-white/8 bg-white/3 p-5 mb-5">
+      <div className="rounded-xl border border-white/8 bg-[#141228]/70 backdrop-blur-md p-5 mb-5">
         <p className="text-sm font-semibold text-white/70 mb-3">บัญชี</p>
         <div className="flex items-center gap-3">
           <div className="flex h-12 w-12 items-center justify-center rounded-full bg-primary-600/30 text-lg font-semibold text-primary-200">
@@ -64,7 +64,7 @@ export default function SettingsPage() {
       </div>
 
       {/* LLM keys info */}
-      <div className="rounded-xl border border-white/8 bg-white/3 p-5">
+      <div className="rounded-xl border border-white/8 bg-[#141228]/70 backdrop-blur-md p-5">
         <p className="flex items-center gap-1.5 text-sm font-semibold text-white/70 mb-2"><KeyRound size={14}/> LLM Providers</p>
         <p className="text-xs text-white/40 leading-relaxed">
           API keys ตั้งค่าฝั่ง server ที่ไฟล์ <code className="text-primary-300">backend/.env</code> เพื่อความปลอดภัย

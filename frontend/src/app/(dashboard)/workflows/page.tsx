@@ -127,9 +127,9 @@ export default function WorkflowsPage() {
   };
 
   return (
-    <div className="-m-6 h-screen flex">
+    <div className="absolute inset-0 flex">
       {/* Left: workflow list + palette */}
-      <div className="w-56 shrink-0 border-r border-white/8 bg-[#0d0d1f] flex flex-col">
+      <div className="w-56 shrink-0 border-r border-white/8 bg-[#16131f] flex flex-col">
         <div className="p-3 border-b border-white/8">
           <Button size="sm" className="w-full gap-1.5" onClick={newWorkflow}><Plus size={14}/> New</Button>
         </div>
@@ -158,7 +158,7 @@ export default function WorkflowsPage() {
 
       {/* Center: canvas */}
       <div className="flex-1 relative">
-        <div className="absolute top-0 left-0 right-0 z-10 flex items-center gap-2 px-4 py-2.5 bg-[#0d0d1f]/90 border-b border-white/8">
+        <div className="absolute top-0 left-0 right-0 z-10 flex items-center gap-2 px-4 py-2.5 bg-[#16131f]/90 border-b border-white/8">
           <input value={name} onChange={(e) => setName(e.target.value)}
             className="bg-transparent text-sm font-bold text-white outline-none flex-1" />
           <Button size="sm" variant="outline" className="gap-1.5" onClick={save}><Save size={13}/> Save</Button>
@@ -170,7 +170,7 @@ export default function WorkflowsPage() {
             onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
             onConnect={onConnect} onNodeClick={(_, n) => setSelected(n)}
             fitView proOptions={{ hideAttribution: true }}
-            style={{ background: "#0a0a1a" }}
+            style={{ background: "#0e0b16" }}
           >
             <Background color="#1f2937" gap={20} />
             <Controls />
@@ -191,7 +191,7 @@ export default function WorkflowsPage() {
 
       {/* Right: node inspector */}
       {selected && (
-        <div className="w-64 shrink-0 border-l border-white/8 bg-[#0d0d1f] p-4">
+        <div className="w-64 shrink-0 border-l border-white/8 bg-[#16131f] p-4">
           <div className="flex items-center justify-between mb-3">
             <span className="text-sm font-bold text-white">{selected.data.label}</span>
             <button onClick={() => setSelected(null)} className="text-white/40"><X size={15}/></button>

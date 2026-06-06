@@ -32,7 +32,7 @@ export default function ObservabilityPage() {
   ];
 
   return (
-    <div className="animate-fade-in max-w-5xl">
+    <div className="animate-fade-in mx-auto w-full max-w-6xl">
       <div className="mb-6">
         <h1 className="text-2xl font-bold text-white">📊 Observability</h1>
         <p className="text-white/40 text-sm mt-1">ติดตาม token, latency, errors — อัปเดตทุก 10 วินาที</p>
@@ -41,7 +41,7 @@ export default function ObservabilityPage() {
       {/* Stat cards */}
       <div className="grid grid-cols-2 lg:grid-cols-3 gap-3 mb-6">
         {stats.map(({ label, value, icon: Icon, color }) => (
-          <div key={label} className="rounded-xl border border-white/5 bg-white/3 p-4">
+          <div key={label} className="rounded-xl border border-white/10 bg-[#141228]/70 backdrop-blur-md p-4">
             <div className="flex items-center justify-between mb-2">
               <span className="text-xs text-white/40">{label}</span>
               <div className="rounded-lg p-1.5" style={{ background: color + "1a" }}><Icon size={14} style={{ color }} /></div>
@@ -52,7 +52,7 @@ export default function ObservabilityPage() {
       </div>
 
       {/* Token series chart */}
-      <div className="rounded-xl border border-white/5 bg-white/3 p-5 mb-6">
+      <div className="rounded-xl border border-white/10 bg-[#141228]/70 backdrop-blur-md p-5 mb-6">
         <p className="text-sm font-semibold text-white/70 mb-4">Token Usage — 7 วันล่าสุด</p>
         <div className="flex items-end gap-2 h-40">
           {series.map((s) => (
@@ -68,7 +68,7 @@ export default function ObservabilityPage() {
 
       {/* Per-agent */}
       {sum?.by_agent?.length > 0 && (
-        <div className="rounded-xl border border-white/5 bg-white/3 p-5 mb-6">
+        <div className="rounded-xl border border-white/10 bg-[#141228]/70 backdrop-blur-md p-5 mb-6">
           <p className="text-sm font-semibold text-white/70 mb-3">Per Agent</p>
           <div className="space-y-1.5">
             {sum.by_agent.map((a: any) => (
@@ -87,12 +87,12 @@ export default function ObservabilityPage() {
       )}
 
       {/* Recent events */}
-      <div className="rounded-xl border border-white/5 bg-white/3 p-5">
+      <div className="rounded-xl border border-white/10 bg-[#141228]/70 backdrop-blur-md p-5">
         <p className="text-sm font-semibold text-white/70 mb-3">Recent Events</p>
         <div className="space-y-1">
           {events.length === 0 && <p className="text-xs text-white/30">ยังไม่มี event — ลองแชทกับ agent</p>}
           {events.map((e) => (
-            <div key={e.id} className="flex items-center gap-3 rounded-lg border border-white/5 bg-white/3 px-3 py-2 text-xs">
+            <div key={e.id} className="flex items-center gap-3 rounded-lg border border-white/10 bg-[#141228]/70 backdrop-blur-md px-3 py-2 text-xs">
               <span className={`h-2 w-2 rounded-full shrink-0 ${e.status === "success" ? "bg-green-400" : "bg-red-400"}`} />
               <span className="text-white/70 w-16">{e.kind}</span>
               <span className="text-white/50 flex-1 truncate">{e.agent ?? "—"} · {e.model}</span>

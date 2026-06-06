@@ -6,13 +6,13 @@ import { useWorkspaceStore } from "@/store/workspace";
 import { useOfficeStore } from "@/store/office";
 
 const OfficeView = dynamic(
-  () => import("@/components/phaser/PhaserOffice"),
+  () => import("@/components/office/StaticOffice"),
   { ssr: false, loading: () => <LoadingScreen /> }
 );
 
 function LoadingScreen() {
   return (
-    <div className="flex h-full items-center justify-center bg-[#0a0a1a]">
+    <div className="flex h-full items-center justify-center bg-[#0e0b16]">
       <div className="flex flex-col items-center gap-4">
         <div className="relative h-16 w-16">
           <div className="absolute inset-0 rounded-full border-2 border-primary-500/20" />
@@ -45,7 +45,7 @@ export default function OfficePage() {
   const isLoading = wsLoading || loading || (!office && !!current);
 
   return (
-    <div className="-m-6 h-screen relative overflow-hidden">
+    <div className="absolute inset-0 overflow-hidden">
       {isLoading ? <LoadingScreen /> : office ? (
         <OfficeView agents={agents} officeName={office.name} />
       ) : (

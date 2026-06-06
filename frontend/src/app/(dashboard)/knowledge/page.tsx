@@ -69,7 +69,7 @@ export default function KnowledgePage() {
   };
 
   return (
-    <div className="animate-fade-in max-w-5xl">
+    <div className="animate-fade-in mx-auto w-full max-w-6xl">
       <div className="mb-6 flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-white">📚 Knowledge Hub</h1>
@@ -90,7 +90,7 @@ export default function KnowledgePage() {
 
       {/* Add text form */}
       {showAdd && (
-        <div className="mb-6 rounded-xl border border-white/8 bg-white/3 p-4 space-y-3">
+        <div className="mb-6 rounded-xl border border-white/8 bg-[#141228]/70 backdrop-blur-md p-4 space-y-3">
           <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="ชื่อเอกสาร"
             className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white" />
           <textarea value={text} onChange={(e) => setText(e.target.value)} placeholder="เนื้อหา..." rows={5}
@@ -100,7 +100,7 @@ export default function KnowledgePage() {
       )}
 
       {/* Search */}
-      <div className="mb-6 rounded-xl border border-white/8 bg-white/3 p-4">
+      <div className="mb-6 rounded-xl border border-white/8 bg-[#141228]/70 backdrop-blur-md p-4">
         <div className="flex gap-2">
           <input value={query} onChange={(e) => setQuery(e.target.value)} onKeyDown={(e) => e.key === "Enter" && search()}
             placeholder="ค้นหาในเอกสาร (semantic search)..."
@@ -110,7 +110,7 @@ export default function KnowledgePage() {
         {hits.length > 0 && (
           <div className="mt-4 space-y-2">
             {hits.map((h, i) => (
-              <div key={i} className="rounded-lg border border-white/5 bg-black/30 p-3">
+              <div key={i} className="rounded-lg border border-white/10 bg-black/30 p-3">
                 <div className="flex items-center gap-2 mb-1">
                   <span className="text-[10px] px-1.5 py-0.5 rounded bg-primary-600/30 text-primary-300">
                     {(h.score * 100).toFixed(0)}%
@@ -128,7 +128,7 @@ export default function KnowledgePage() {
       {/* Doc list */}
       <div className="grid gap-2 sm:grid-cols-2">
         {docs.map((d) => (
-          <div key={d.id} className="flex items-center gap-3 rounded-xl border border-white/8 bg-white/3 p-3">
+          <div key={d.id} className="flex items-center gap-3 rounded-xl border border-white/8 bg-[#141228]/70 backdrop-blur-md p-3">
             <FileText size={18} className="text-primary-400 shrink-0" />
             <div className="flex-1 min-w-0">
               <p className="text-sm font-medium text-white truncate">{d.title}</p>

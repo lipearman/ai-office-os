@@ -41,7 +41,7 @@ export default function AgentsPage() {
   };
 
   return (
-    <div className="animate-fade-in max-w-5xl">
+    <div className="animate-fade-in mx-auto w-full max-w-6xl">
       <div className="mb-6 flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-white flex items-center gap-2"><Bot size={22}/> Agents</h1>
@@ -55,7 +55,7 @@ export default function AgentsPage() {
       <div className="grid gap-3 sm:grid-cols-2">
         {agents.map((a) => (
           <button key={a.id} onClick={() => setEditing({ ...a })}
-            className="flex items-start gap-3 rounded-xl border border-white/8 bg-white/3 p-4 text-left hover:border-white/20">
+            className="flex items-start gap-3 rounded-xl border border-white/8 bg-[#141228]/70 backdrop-blur-md p-4 text-left hover:border-white/20">
             <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-xl"
               style={{ background: (AGENT_COLORS[a.agent_type] ?? "#6366f1") + "22", border: `1px solid ${AGENT_COLORS[a.agent_type] ?? "#6366f1"}` }}>
               {AGENT_EMOJI[a.agent_type] ?? "🤖"}
@@ -72,7 +72,7 @@ export default function AgentsPage() {
       {/* Editor modal */}
       {editing && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
-          <div className="w-full max-w-lg rounded-2xl border border-white/10 bg-[#0d0d1f] p-6 max-h-[90vh] overflow-y-auto">
+          <div className="w-full max-w-lg rounded-2xl border border-white/10 bg-[#16131f] p-6 max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-base font-bold text-white">{editing.id ? "แก้ไข Agent" : "สร้าง Agent"}</h2>
               <button onClick={() => setEditing(null)} className="text-white/40 hover:text-white"><X size={18}/></button>

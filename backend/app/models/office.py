@@ -49,3 +49,21 @@ class OfficeObject(Base, UUIDMixin, TimestampMixin):
     position_z: Mapped[float] = mapped_column(Float, default=0.0)
     rotation_y: Mapped[float] = mapped_column(Float, default=0.0)
     config: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class OfficeTemplate(Base, UUIDMixin, TimestampMixin):
+    """A static-image office layout: one background image plus agent markers.
+
+    markers is a JSON list of:
+        {"id": str, "agent_id": str, "x": float, "y": float, "scale": float}
+    where x/y are percentages (0-100) of the image, so the layout is responsive.
+    """
+    __tablename__ = "office_templates"
+
+    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id"), nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    image_url: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    markers: Mapped[list] = mapped_column(JSON, default=list)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    workspace: Mapped["Workspace"] = relationship()

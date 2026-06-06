@@ -56,3 +56,39 @@ class RoomUpdate(BaseModel):
     position_y: float | None = None
     position_z: float | None = None
     config: dict | None = None
+
+
+# --- Static office templates ---
+
+class Marker(BaseModel):
+    id: str
+    agent_id: str
+    x: float           # 0-100 (% of image width)
+    y: float           # 0-100 (% of image height)
+    scale: float = 1.0
+
+
+class OfficeTemplateOut(BaseModel):
+    id: uuid.UUID
+    workspace_id: uuid.UUID
+    name: str
+    image_url: str | None
+    markers: list[Marker] = []
+    is_active: bool
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class OfficeTemplateCreate(BaseModel):
+    name: str
+    image_url: str | None = None
+    markers: list[Marker] = []
+    is_active: bool = False
+
+
+class OfficeTemplateUpdate(BaseModel):
+    name: str | None = None
+    image_url: str | None = None
+    markers: list[Marker] | None = None
+    is_active: bool | None = None

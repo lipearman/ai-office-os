@@ -4,10 +4,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 from app.core.database import get_db
-from app.models.office import Office, Room
+from app.models.office import Office, Room, OfficeTemplate
 from app.models.workspace import Workspace, WorkspaceMember
 from app.models.user import User
-from app.schemas.office import OfficeOut, OfficeCreate, RoomOut, RoomCreate, RoomUpdate
+from app.schemas.office import (
+    OfficeOut, OfficeCreate, RoomOut, RoomCreate, RoomUpdate,
+    OfficeTemplateOut, OfficeTemplateCreate, OfficeTemplateUpdate,
+)
 from app.api.deps import get_current_user
 
 router = APIRouter(prefix="/offices", tags=["offices"])
@@ -133,3 +136,100 @@ async def update_room(
             setattr(room, field, value)
 
     return RoomOut.model_validate(room)
+
+
+# --- Static office templates ---------------------------------------------
+
+async def _deactivate_others(workspace_id: uuid.UUID, keep_id: uuid.UUID | None, db: AsyncSession):
+    result = await db.execute(
+        select(OfficeTemplate).where(
+            OfficeTemplate.workspace_id == workspace_id,
+            OfficeTemplate.is_active == True,
+        )
+    )
+    for t in result.scalars().all():
+        if t.id != keep_id:
+            t.is_active = False
+
+
+@router.get("/templates/workspace/{workspace_id}", response_model=list[OfficeTemplateOut])
+async def list_templates(
+    workspace_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    await _get_workspace(workspace_id, current_user, db)
+    result = await db.execute(
+        select(OfficeTemplate)
+        .where(OfficeTemplate.workspace_id == workspace_id)
+        .order_by(OfficeTemplate.created_at)
+    )
+    return [OfficeTemplateOut.model_validate(t) for t in result.scalars().all()]
+
+
+@router.post("/templates/workspace/{workspace_id}", response_model=OfficeTemplateOut, status_code=201)
+async def create_template(
+    workspace_id: uuid.UUID,
+    data: OfficeTemplateCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    await _get_workspace(workspace_id, current_user, db)
+
+    template = OfficeTemplate(
+        workspace_id=workspace_id,
+        name=data.name,
+        image_url=data.image_url,
+        markers=[m.model_dump() for m in data.markers],
+        is_active=data.is_active,
+    )
+    if data.is_active:
+        await _deactivate_others(workspace_id, None, db)
+    db.add(template)
+    await db.flush()
+    await db.refresh(template)
+    return OfficeTemplateOut.model_validate(template)
+
+
+@router.patch("/templates/{template_id}", response_model=OfficeTemplateOut)
+async def update_template(
+    template_id: uuid.UUID,
+    data: OfficeTemplateUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    result = await db.execute(select(OfficeTemplate).where(OfficeTemplate.id == template_id))
+    template = result.scalar_one_or_none()
+    if not template:
+        raise HTTPException(status_code=404, detail="Template not found")
+    await _get_workspace(template.workspace_id, current_user, db)
+
+    patch = data.model_dump(exclude_unset=True)
+    if "markers" in patch and patch["markers"] is not None:
+        template.markers = [m for m in patch["markers"]]
+    if "name" in patch and patch["name"] is not None:
+        template.name = patch["name"]
+    if "image_url" in patch:
+        template.image_url = patch["image_url"]
+    if "is_active" in patch and patch["is_active"] is not None:
+        template.is_active = patch["is_active"]
+        if patch["is_active"]:
+            await _deactivate_others(template.workspace_id, template.id, db)
+
+    await db.flush()
+    await db.refresh(template)
+    return OfficeTemplateOut.model_validate(template)
+
+
+@router.delete("/templates/{template_id}", status_code=204)
+async def delete_template(
+    template_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    result = await db.execute(select(OfficeTemplate).where(OfficeTemplate.id == template_id))
+    template = result.scalar_one_or_none()
+    if not template:
+        raise HTTPException(status_code=404, detail="Template not found")
+    await _get_workspace(template.workspace_id, current_user, db)
+    await db.delete(template)

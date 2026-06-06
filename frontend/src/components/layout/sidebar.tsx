@@ -40,13 +40,13 @@ export function Sidebar() {
   const { user, logout } = useAuthStore();
 
   return (
-    <aside className="flex h-screen w-16 flex-col items-center border-r border-white/5 bg-white/2 py-4 lg:w-56 lg:items-start lg:px-3">
+    <aside className="flex h-screen w-16 flex-col items-center border-r border-primary-500/20 bg-[#141228]/70 backdrop-blur-xl shadow-[0_0_40px_-10px_rgba(34,211,238,0.25)] py-4 lg:w-56 lg:items-start lg:px-3">
       {/* Logo */}
       <div className="mb-6 flex items-center gap-3 px-2">
-        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary-600">
+        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-primary-500 to-accent-500 shadow-lg shadow-primary-500/30">
           <span className="text-lg">🏢</span>
         </div>
-        <span className="hidden text-sm font-semibold text-white lg:block">AI Office OS</span>
+        <span className="hidden bg-gradient-to-r from-primary-400 to-accent-400 bg-clip-text text-sm font-bold text-transparent lg:block">AI Office OS</span>
       </div>
 
       {/* Nav */}

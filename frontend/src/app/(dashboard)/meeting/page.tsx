@@ -47,14 +47,14 @@ export default function MeetingPage() {
   };
 
   return (
-    <div className="animate-fade-in max-w-4xl">
+    <div className="animate-fade-in mx-auto w-full max-w-4xl">
       <div className="mb-6">
         <h1 className="text-2xl font-bold text-white flex items-center gap-2"><Users size={22}/> AI Meeting</h1>
         <p className="text-white/40 text-sm mt-1">ให้ทีม agent ประชุมหารือหัวข้อร่วมกัน แล้วสรุปผล</p>
       </div>
 
       {/* Setup */}
-      <div className="rounded-xl border border-white/8 bg-white/3 p-4 mb-6 space-y-4">
+      <div className="rounded-xl border border-white/8 bg-[#141228]/70 backdrop-blur-md p-4 mb-6 space-y-4">
         <input value={topic} onChange={(e) => setTopic(e.target.value)}
           placeholder="หัวข้อประชุม เช่น: ออกแบบฟีเจอร์ login ใหม่ ต้องคำนึงถึงอะไรบ้าง?"
           className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2.5 text-sm text-white" />

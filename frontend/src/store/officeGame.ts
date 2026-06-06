@@ -9,6 +9,20 @@ export interface CatalogItem {
   url: string;
 }
 
+export interface OfficeSettings {
+  charScale: number;   // 0.5 – 2
+  walkSpeed: number;   // px / second
+  showLabels: boolean;
+  collision: boolean;
+}
+
+export const DEFAULT_SETTINGS: OfficeSettings = {
+  charScale: 1,
+  walkSpeed: 95,
+  showLabels: true,
+  collision: true,
+};
+
 const FURN_NAMES = [
   "desk", "computer", "chair", "sofa", "coffee_table", "plant", "bookshelf",
   "cabinet", "locker", "vending_machine", "water_dispenser", "whiteboard",
@@ -20,6 +34,8 @@ const DEFAULT_CATALOG: CatalogItem[] = FURN_NAMES.map((n) => ({
 
 interface OfficeGameStore extends OfficeGameConfig {
   catalog: CatalogItem[];
+  settings: OfficeSettings;
+  updateSettings: (patch: Partial<OfficeSettings>) => void;
   setBackground: (url: string | null, fit?: OfficeGameConfig["backgroundFit"]) => void;
   addFurniture: (item: FurnitureItem) => void;
   updateFurniture: (id: string, patch: Partial<FurnitureItem>) => void;
@@ -43,6 +59,9 @@ export const useOfficeGameStore = create<OfficeGameStore>()(
       furniture: DEFAULT_FURNITURE,
       agentSprites: {},
       catalog: DEFAULT_CATALOG,
+      settings: DEFAULT_SETTINGS,
+
+      updateSettings: (patch) => set((s) => ({ settings: { ...s.settings, ...patch } })),
 
       setBackground: (url, fit = "cover") => set({ backgroundUrl: url, backgroundFit: fit }),
 
@@ -64,12 +83,14 @@ export const useOfficeGameStore = create<OfficeGameStore>()(
 
       reset: () =>
         set({ backgroundUrl: DEFAULT_BACKGROUND, backgroundFit: "cover",
-              furniture: DEFAULT_FURNITURE, agentSprites: {}, catalog: DEFAULT_CATALOG }),
+              furniture: DEFAULT_FURNITURE, agentSprites: {}, catalog: DEFAULT_CATALOG,
+              settings: DEFAULT_SETTINGS }),
     }),
     {
       name: "office-game-config-v7",
       partialize: (s) => ({
         backgroundFit: s.backgroundFit,
+        settings: s.settings,
         backgroundUrl: isPersistable(s.backgroundUrl) ? s.backgroundUrl : DEFAULT_BACKGROUND,
         furniture: s.furniture.map((f) => ({
           ...f,

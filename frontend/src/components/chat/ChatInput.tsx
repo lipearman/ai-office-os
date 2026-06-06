@@ -60,7 +60,7 @@ export function ChatInput({ conversationId, onSend, disabled }: ChatInputProps) 
   };
 
   return (
-    <div className="border-t border-white/5 bg-black/30 px-4 py-3">
+    <div className="border-t border-white/10 bg-black/30 px-4 py-3">
       <div className="flex items-end gap-2 rounded-2xl border border-white/10 bg-white/5 px-3 py-2">
         <button className="mb-1 shrink-0 text-white/30 hover:text-white/60 transition-colors">
           <Paperclip size={16} />

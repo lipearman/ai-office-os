@@ -41,7 +41,7 @@ export default function MemoryPage() {
   };
 
   return (
-    <div className="animate-fade-in max-w-4xl">
+    <div className="animate-fade-in mx-auto w-full max-w-4xl">
       <div className="mb-6">
         <h1 className="text-2xl font-bold text-white flex items-center gap-2"><Brain size={22}/> Memory</h1>
         <p className="text-white/40 text-sm mt-1">ความจำระยะยาวของ agent — {mems.length} รายการ (inject เข้าแชทอัตโนมัติ)</p>
@@ -56,7 +56,7 @@ export default function MemoryPage() {
       </div>
 
       {/* Recall test */}
-      <div className="mb-6 rounded-xl border border-white/8 bg-white/3 p-4">
+      <div className="mb-6 rounded-xl border border-white/8 bg-[#141228]/70 backdrop-blur-md p-4">
         <div className="flex gap-2">
           <input value={query} onChange={(e) => setQuery(e.target.value)} onKeyDown={(e) => e.key === "Enter" && search()}
             placeholder="ทดสอบ recall — พิมพ์คำถามดูว่า agent จะนึกถึง memory ไหน"
@@ -78,7 +78,7 @@ export default function MemoryPage() {
       {/* List */}
       <div className="space-y-1.5">
         {mems.map((m) => (
-          <div key={m.id} className="flex items-start gap-3 rounded-xl border border-white/8 bg-white/3 p-3">
+          <div key={m.id} className="flex items-start gap-3 rounded-xl border border-white/8 bg-[#141228]/70 backdrop-blur-md p-3">
             <span className="text-[10px] px-1.5 py-0.5 rounded uppercase tracking-wider shrink-0 mt-0.5"
               style={{ background: (KIND_COLOR[m.kind] ?? "#6366f1") + "22", color: KIND_COLOR[m.kind] ?? "#6366f1" }}>
               {m.kind}
