@@ -9,6 +9,7 @@ from app.models.workflow import Workflow, WorkflowRun
 from app.models.memory import Memory
 from app.models.event import UsageEvent
 from app.models.audit import AuditLog
+from app.models.watchlist import WatchlistItem
 
 __all__ = [
     "User", "UserRole",
@@ -22,4 +23,5 @@ __all__ = [
     "Memory",
     "UsageEvent",
     "AuditLog",
+    "WatchlistItem",
 ]

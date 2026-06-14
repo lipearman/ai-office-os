@@ -1,0 +1,136 @@
+import uuid
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+
+from app.core.database import get_db
+from app.models.user import User
+from app.models.watchlist import WatchlistItem
+from app.schemas.trading import (
+    WatchlistItemOut, WatchlistItemCreate, WatchlistItemUpdate,
+)
+from app.api.deps import get_current_user
+from app.trading.bitkub import BitkubClient, to_tradingview_symbol
+from app.trading.service import analyze_with_brief, scan_symbols
+
+router = APIRouter(prefix="/trading", tags=["trading"])
+
+
+# ── reference data ──────────────────────────────────────────────
+@router.get("/symbols")
+async def list_symbols(current_user: User = Depends(get_current_user)):
+    """Available Bitkub symbols in tradingview format (e.g. BTC_THB)."""
+    client = BitkubClient()
+    raw = await client.list_symbols()
+    out = []
+    for s in raw:
+        market = s.get("symbol", "")            # e.g. "THB_BTC"
+        out.append({
+            "market": market,
+            "symbol": to_tradingview_symbol(market),
+            "info": s.get("info", ""),
+        })
+    return out
+
+
+# ── single-symbol analysis ──────────────────────────────────────
+@router.get("/analyze/{symbol}")
+async def analyze(symbol: str, current_user: User = Depends(get_current_user)):
+    """Full Multi-Timeframe top-down analysis + daily brief for one symbol."""
+    client = BitkubClient()
+    result = await analyze_with_brief(client, symbol)
+    if not result:
+        raise HTTPException(status_code=404, detail=f"No data for {symbol}")
+    return result
+
+
+# ── watchlist CRUD ──────────────────────────────────────────────
+@router.get("/watchlist/workspace/{workspace_id}", response_model=list[WatchlistItemOut])
+async def list_watchlist(
+    workspace_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    result = await db.execute(
+        select(WatchlistItem).where(WatchlistItem.workspace_id == workspace_id)
+    )
+    return [WatchlistItemOut.model_validate(w) for w in result.scalars().all()]
+
+
+@router.post("/watchlist/workspace/{workspace_id}", response_model=WatchlistItemOut, status_code=201)
+async def add_watchlist(
+    workspace_id: uuid.UUID,
+    data: WatchlistItemCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    symbol = to_tradingview_symbol(data.symbol)
+    # avoid duplicates per workspace
+    existing = await db.execute(
+        select(WatchlistItem).where(
+            WatchlistItem.workspace_id == workspace_id,
+            WatchlistItem.symbol == symbol,
+        )
+    )
+    if existing.scalar_one_or_none():
+        raise HTTPException(status_code=409, detail=f"{symbol} already in watchlist")
+
+    item = WatchlistItem(
+        workspace_id=workspace_id,
+        symbol=symbol,
+        enabled=data.enabled,
+        strategies=data.strategies,
+    )
+    db.add(item)
+    await db.flush()
+    return WatchlistItemOut.model_validate(item)
+
+
+@router.patch("/watchlist/{item_id}", response_model=WatchlistItemOut)
+async def update_watchlist(
+    item_id: uuid.UUID,
+    data: WatchlistItemUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    result = await db.execute(select(WatchlistItem).where(WatchlistItem.id == item_id))
+    item = result.scalar_one_or_none()
+    if not item:
+        raise HTTPException(status_code=404, detail="Watchlist item not found")
+    for field, value in data.model_dump(exclude_none=True).items():
+        setattr(item, field, value)
+    return WatchlistItemOut.model_validate(item)
+
+
+@router.delete("/watchlist/{item_id}", status_code=204)
+async def delete_watchlist(
+    item_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    result = await db.execute(select(WatchlistItem).where(WatchlistItem.id == item_id))
+    item = result.scalar_one_or_none()
+    if not item:
+        raise HTTPException(status_code=404, detail="Watchlist item not found")
+    await db.delete(item)
+
+
+# ── signal scanner ──────────────────────────────────────────────
+@router.get("/scan/workspace/{workspace_id}")
+async def scan_watchlist(
+    workspace_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Scan every enabled watchlist symbol → ranked signals (BUY first)."""
+    result = await db.execute(
+        select(WatchlistItem).where(
+            WatchlistItem.workspace_id == workspace_id,
+            WatchlistItem.enabled == True,  # noqa: E712
+        )
+    )
+    symbols = [w.symbol for w in result.scalars().all()]
+    if not symbols:
+        return {"results": [], "count": 0}
+    results = await scan_symbols(symbols)
+    return {"results": results, "count": len(results)}
