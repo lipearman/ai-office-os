@@ -9,6 +9,12 @@ import asyncio
 from app.trading.bitkub import BitkubClient, to_tradingview_symbol, BitkubError
 from app.trading.indicators import compute_features
 from app.trading.mtf import build_snapshot, build_daily_brief, MTFSnapshot
+from app.trading.backtest import (
+    run_backtest, BacktestParams, prepare, _valid_i, _entry_ok_i,
+)
+from app.trading.indicators import indicator_frame
+from app.trading.optimizer import optimize
+from app.trading.ml import ml_report
 
 
 async def analyze_symbol(client: BitkubClient, symbol: str) -> MTFSnapshot | None:
@@ -33,6 +39,181 @@ async def analyze_with_brief(client: BitkubClient, symbol: str) -> dict | None:
     if not snap:
         return None
     return {"snapshot": snap.to_dict(), "brief": build_daily_brief(snap)}
+
+
+async def backtest_symbol(
+    client: BitkubClient, symbol: str, timeframe: str = "4H", limit: int = 1500
+) -> dict | None:
+    """Run baseline vs validated backtest → both results for A/B comparison."""
+    tv = to_tradingview_symbol(symbol)
+    try:
+        candles = await client.fetch_ohlcv(tv, timeframe, limit=limit)
+    except BitkubError:
+        return None
+    if not candles:
+        return None
+
+    baseline = run_backtest(candles, BacktestParams(use_validator=False))
+    validated = run_backtest(candles, BacktestParams(use_validator=True))
+
+    def _delta(a: dict, b: dict, key: str):
+        av, bv = a.get(key), b.get(key)
+        if av is None or bv is None:
+            return None
+        return round(bv - av, 2)
+
+    bs, vs = baseline.stats, validated.stats
+    return {
+        "symbol": tv,
+        "timeframe": timeframe,
+        "bars": baseline.bars,
+        "baseline": baseline.to_dict(),
+        "validated": validated.to_dict(),
+        "delta": {
+            "profit_factor": _delta(bs, vs, "profit_factor"),
+            "win_rate": _delta(bs, vs, "win_rate"),
+            "total_return_pct": _delta(bs, vs, "total_return_pct"),
+            "total_trades": _delta(bs, vs, "total_trades"),
+        },
+    }
+
+
+async def optimize_symbol(
+    client: BitkubClient, symbol: str, timeframe: str = "1H", limit: int = 2000
+) -> dict | None:
+    """Walk-forward auto-optimize → suggested params + OOS evidence (human gate)."""
+    tv = to_tradingview_symbol(symbol)
+    try:
+        candles = await client.fetch_ohlcv(tv, timeframe, limit=limit)
+    except BitkubError:
+        return None
+    if not candles:
+        return None
+    return await asyncio.to_thread(optimize, candles, 4)
+
+
+async def ml_symbol(
+    client: BitkubClient, symbol: str, timeframe: str = "1H", limit: int = 2000,
+    horizon: int = 8,
+) -> dict | None:
+    """ML ensemble report (walk-forward) + rule-vs-ensemble compare (human gate)."""
+    tv = to_tradingview_symbol(symbol)
+    try:
+        candles = await client.fetch_ohlcv(tv, timeframe, limit=limit)
+    except BitkubError:
+        return None
+    if not candles:
+        return None
+    return await asyncio.to_thread(ml_report, candles, horizon)
+
+
+async def daily_opportunity(
+    client: BitkubClient, symbol: str, cfg: dict | None = None, default_tf: str = "1H",
+) -> dict | None:
+    """Estimate today's winning chance for a symbol.
+
+    Combines (a) whether the (assigned) strategy's entry condition fires on the
+    latest CLOSED bar, with (b) that strategy's historical win rate / profit
+    factor from a backtest. This is an *estimate* from past setups + the current
+    signal — not a guarantee.
+    """
+    tv = to_tradingview_symbol(symbol)
+    tf = (cfg or {}).get("timeframe") or default_tf
+    params = BacktestParams(**cfg["params"]) if cfg and cfg.get("params") else BacktestParams()
+    strategy = params.strategy
+
+    try:
+        candles = await client.fetch_ohlcv(tv, tf, limit=1500)
+    except BitkubError:
+        return None
+    if not candles:
+        return None
+
+    # historical edge for this strategy on this symbol
+    bt = run_backtest(candles, params)
+    hist = bt.stats
+    wr = hist.get("win_rate")
+    pf = hist.get("profit_factor")
+    n = hist.get("total_trades", 0)
+    exp = hist.get("expectancy_pct")
+
+    # today's signal: does the entry fire on the latest closed bar?
+    df = indicator_frame(candles, closed_only=True).reset_index(drop=True)
+    C = prepare(df)
+    last = len(df) - 1
+    signal_today = bool(last >= 0 and _valid_i(C, last) and _entry_ok_i(C, last, params))
+
+    # trade plan from the latest bar
+    close = float(C["close"][last]); atr = float(C["atr14"][last]) or close * 0.01
+    stop = close - params.stop_atr * atr
+    target = close + params.tp_rr * (close - stop)
+
+    confidence = min(1.0, n / 15.0)              # sample-size confidence
+    has_edge = (pf is not None and pf >= 1.2 and (wr or 0) >= 50)
+    reasons: list[str] = []
+
+    if signal_today:
+        win_chance = wr if (wr is not None and n >= 5) else 50.0
+        # opportunity score: win chance, tempered by edge quality + confidence
+        edge_mult = 1.0 if has_edge else (0.8 if (pf or 0) >= 1.0 else 0.6)
+        score = round(win_chance * (0.55 + 0.45 * confidence) * edge_mult, 1)
+        reasons.append(f"✅ สัญญาณ {strategy} เกิดวันนี้ ({tf})")
+        if wr is not None and n >= 5:
+            reasons.append(f"อดีตชนะ {wr}% จาก {n} เทรด (PF {pf}, expectancy {exp}%)")
+        else:
+            reasons.append(f"ตัวอย่างอดีตน้อย ({n} เทรด) — ความเชื่อมั่นต่ำ")
+        if not has_edge:
+            reasons.append("⚠️ กลยุทธ์นี้ยังไม่พิสูจน์ว่ามี edge ชัด — ระวัง")
+        if confidence < 0.5:
+            reasons.append("⚠️ sample เล็ก ผลอาจไม่น่าเชื่อถือ")
+        if win_chance >= 55 and has_edge:
+            label = "🟢 จังหวะดี"
+        elif win_chance >= 45:
+            label = "🟡 พอมีลุ้น"
+        else:
+            label = "🟠 สัญญาณมา แต่อดีตอ่อน"
+    else:
+        win_chance = None
+        score = round((10 if has_edge else 3) * confidence, 1)  # watch value only
+        label = "🔵 ยังไม่มีจังหวะวันนี้"
+        reasons.append(f"ยังไม่เข้าเงื่อนไข {strategy} บนแท่งล่าสุด ({tf})")
+        if has_edge:
+            reasons.append(f"กลยุทธ์มี edge ในอดีต (ชนะ {wr}% PF {pf}) — รอ setup")
+        else:
+            reasons.append("กลยุทธ์ยังไม่มี edge ชัดในอดีต")
+
+    return {
+        "symbol": tv,
+        "timeframe": tf,
+        "strategy": strategy,
+        "assigned": cfg is not None,
+        "signal_today": signal_today,
+        "win_chance_pct": win_chance,
+        "opportunity_score": score,
+        "label": label,
+        "reasons": reasons,
+        "historical": {"win_rate": wr, "profit_factor": pf, "expectancy_pct": exp, "trades": n},
+        "price": round(close, 2),
+        "plan": {"entry": round(close, 2), "stop": round(stop, 2),
+                 "target": round(target, 2), "rr": params.tp_rr} if signal_today else None,
+        "disclaimer": "ประมาณการจากสถิติอดีต + สัญญาณวันนี้ ไม่ใช่การรับประกัน",
+    }
+
+
+async def daily_opportunities(items: list[dict], concurrency: int = 4) -> list[dict]:
+    """Evaluate each watchlist item (symbol + assigned cfg) → ranked by score."""
+    client = BitkubClient()
+    sem = asyncio.Semaphore(concurrency)
+
+    async def one(it: dict) -> dict | None:
+        async with sem:
+            return await daily_opportunity(client, it["symbol"], it.get("cfg"))
+
+    results = await asyncio.gather(*[one(it) for it in items])
+    out = [r for r in results if r]
+    # signals-with-today first, then by opportunity score
+    out.sort(key=lambda r: (0 if r["signal_today"] else 1, -r["opportunity_score"]))
+    return out
 
 
 # rank: BUY first, then by strength/alignment desc

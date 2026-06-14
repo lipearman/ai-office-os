@@ -112,14 +112,37 @@ def _adx(df: pd.DataFrame, n: int = 14) -> tuple[pd.Series, pd.Series, pd.Series
     return adx, plus_di.fillna(0), minus_di.fillna(0)
 
 
-def _f(series: pd.Series) -> float:
-    """Last value as a clean float (0.0 if NaN)."""
-    v = series.iloc[-1]
-    try:
-        v = float(v)
-    except (TypeError, ValueError):
-        return 0.0
-    return 0.0 if pd.isna(v) else round(v, 8)
+def indicator_frame(candles: list[Candle], closed_only: bool = True) -> pd.DataFrame:
+    """Return the OHLCV DataFrame with all indicator columns added.
+
+    Reused by both compute_features (last row) and the backtest engine
+    (full series), so the maths is defined in exactly one place.
+    """
+    df = candles_to_df(candles, closed_only=closed_only)
+    if df.empty:
+        return df
+    close = df["close"]
+    df["ema20"] = _ema(close, 20)
+    df["ema50"] = _ema(close, 50)
+    df["ema200"] = _ema(close, 200)
+    df["rsi14"] = _rsi(close, 14)
+    macd_line = _ema(close, 12) - _ema(close, 26)
+    df["macd"] = macd_line
+    df["macd_signal"] = _ema(macd_line, 9)
+    df["macd_hist"] = df["macd"] - df["macd_signal"]
+    df["atr14"] = _atr(df, 14)
+    adx, plus_di, minus_di = _adx(df, 14)
+    df["adx14"] = adx
+    df["plus_di"] = plus_di
+    df["minus_di"] = minus_di
+    bb_mid = close.rolling(20).mean()
+    bb_std = close.rolling(20).std()
+    df["bb_mid"] = bb_mid
+    df["bb_upper"] = bb_mid + 2 * bb_std
+    df["bb_lower"] = bb_mid - 2 * bb_std
+    vol_sma = df["volume"].rolling(20).mean()
+    df["volume_ratio"] = (df["volume"] / vol_sma.replace(0, pd.NA)).fillna(1.0)
+    return df
 
 
 def compute_features(candles: list[Candle]) -> FeatureSet | None:
@@ -127,49 +150,39 @@ def compute_features(candles: list[Candle]) -> FeatureSet | None:
 
     Returns None if there aren't enough candles for a meaningful read.
     """
-    df = candles_to_df(candles, closed_only=True)
+    df = indicator_frame(candles, closed_only=True)
     if len(df) < 30:           # need a baseline; EMA200 fills in once we have history
         return None
 
-    close = df["close"]
-    ema20 = _ema(close, 20)
-    ema50 = _ema(close, 50)
-    ema200 = _ema(close, 200)
-    rsi = _rsi(close, 14)
-    macd_line = _ema(close, 12) - _ema(close, 26)
-    macd_signal = _ema(macd_line, 9)
-    macd_hist = macd_line - macd_signal
-    atr = _atr(df, 14)
-    adx, plus_di, minus_di = _adx(df, 14)
-
-    bb_mid = close.rolling(20).mean()
-    bb_std = close.rolling(20).std()
-    bb_upper = bb_mid + 2 * bb_std
-    bb_lower = bb_mid - 2 * bb_std
-
-    vol_sma = df["volume"].rolling(20).mean()
-    vol_ratio = (df["volume"] / vol_sma.replace(0, pd.NA)).fillna(1.0)
-
     last = df.iloc[-1]
+
+    def v(col: str) -> float:
+        x = last[col]
+        try:
+            x = float(x)
+        except (TypeError, ValueError):
+            return 0.0
+        return 0.0 if pd.isna(x) else round(x, 8)
+
     return FeatureSet(
         symbol=candles[0].symbol,
         timeframe=candles[0].timeframe,
         ts=pd.Timestamp(last["ts"]).isoformat(),
-        close=_f(close),
-        ema20=_f(ema20),
-        ema50=_f(ema50),
-        ema200=_f(ema200),
-        rsi14=_f(rsi),
-        macd=_f(macd_line),
-        macd_signal=_f(macd_signal),
-        macd_hist=_f(macd_hist),
-        atr14=_f(atr),
-        adx14=_f(adx),
-        plus_di=_f(plus_di),
-        minus_di=_f(minus_di),
-        bb_upper=_f(bb_upper),
-        bb_mid=_f(bb_mid),
-        bb_lower=_f(bb_lower),
-        volume=_f(df["volume"]),
-        volume_ratio=_f(vol_ratio),
+        close=v("close"),
+        ema20=v("ema20"),
+        ema50=v("ema50"),
+        ema200=v("ema200"),
+        rsi14=v("rsi14"),
+        macd=v("macd"),
+        macd_signal=v("macd_signal"),
+        macd_hist=v("macd_hist"),
+        atr14=v("atr14"),
+        adx14=v("adx14"),
+        plus_di=v("plus_di"),
+        minus_di=v("minus_di"),
+        bb_upper=v("bb_upper"),
+        bb_mid=v("bb_mid"),
+        bb_lower=v("bb_lower"),
+        volume=v("volume"),
+        volume_ratio=v("volume_ratio"),
     )
