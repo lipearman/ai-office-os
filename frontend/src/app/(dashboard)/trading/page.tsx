@@ -55,6 +55,13 @@ export default function TradingPage() {
   const [briefLoading, setBriefLoading] = useState(false);
   const [error, setError]         = useState<string | null>(null);
 
+  // ── backtest ──
+  const [btSymbol, setBtSymbol]   = useState("BTC_THB");
+  const [btTf, setBtTf]           = useState("4H");
+  const [btResult, setBtResult]   = useState<any>(null);
+  const [btLoading, setBtLoading] = useState(false);
+  const [btView, setBtView]       = useState<"validated" | "baseline">("validated");
+
   // ── load watchlist + symbol list ──
   const loadWatchlist = () => {
     if (!current) return;
@@ -123,6 +130,22 @@ export default function TradingPage() {
       setBrief(null);
     } finally {
       setBriefLoading(false);
+    }
+  };
+
+  const runBacktest = async () => {
+    if (!btSymbol.trim()) return;
+    setBtLoading(true);
+    setBtResult(null);
+    try {
+      const r = await api.get(`/trading/backtest/${btSymbol.trim().toUpperCase()}`, {
+        params: { timeframe: btTf, limit: 1500 },
+      });
+      setBtResult(r.data);
+    } catch (e: any) {
+      setError(e?.response?.data?.detail ?? "backtest ไม่สำเร็จ");
+    } finally {
+      setBtLoading(false);
     }
   };
 
@@ -325,6 +348,163 @@ export default function TradingPage() {
             )}
           </div>
         </div>
+      </div>
+
+      {/* ── Backtest ── */}
+      <div className="mt-6 rounded-xl border border-white/10 bg-[#141228]/70 backdrop-blur-md">
+        <div className="flex flex-wrap items-center gap-2 border-b border-white/10 px-4 py-3">
+          <span className="text-sm font-semibold text-white/70">🧪 Backtest — EMA Pullback</span>
+          <div className="flex-1" />
+          <input
+            list="symbol-list"
+            value={btSymbol}
+            onChange={(e) => setBtSymbol(e.target.value)}
+            placeholder="BTC_THB"
+            className="w-32 rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-white placeholder-white/30 focus:border-accent-500/50 focus:outline-none"
+          />
+          <select
+            value={btTf}
+            onChange={(e) => setBtTf(e.target.value)}
+            className="rounded-lg border border-white/10 bg-white/5 px-2 py-1.5 text-xs text-white focus:outline-none"
+          >
+            {["15M", "1H", "4H", "1D"].map((tf) => (
+              <option key={tf} value={tf} className="bg-[#1a1040]">{tf}</option>
+            ))}
+          </select>
+          <button
+            onClick={runBacktest}
+            disabled={btLoading}
+            className="flex items-center gap-1.5 rounded-lg bg-accent-500 px-3 py-1.5 text-xs font-semibold text-black transition hover:bg-accent-400 disabled:opacity-50"
+          >
+            <RefreshCw size={13} className={btLoading ? "animate-spin" : ""} />
+            {btLoading ? "กำลังรัน…" : "รัน Backtest"}
+          </button>
+        </div>
+
+        {!btResult && !btLoading && (
+          <p className="px-4 py-8 text-center text-sm text-white/30">
+            เลือกเหรียญ + timeframe แล้วกด “รัน Backtest” เพื่อดูผลย้อนหลัง
+          </p>
+        )}
+        {btLoading && (
+          <p className="px-4 py-8 text-center text-sm text-white/40">กำลังจำลองการเทรดย้อนหลัง…</p>
+        )}
+
+        {btResult && (btResult.baseline?.stats?.total_trades > 0 || btResult.validated?.stats?.total_trades > 0) && (() => {
+          const view = btResult[btView] ?? btResult.validated;
+          const stats = view.stats ?? {};
+          const bs = btResult.baseline.stats ?? {};
+          const vs = btResult.validated.stats ?? {};
+          const metric = (label: string, key: string, fmt: (x: any) => string) => (
+            <div key={key} className="flex items-center gap-2 text-[11px]">
+              <span className="w-28 text-white/50">{label}</span>
+              <span className="w-20 text-right text-white/40">{fmt(bs[key])}</span>
+              <span className="w-20 text-right font-semibold text-white">{fmt(vs[key])}</span>
+            </div>
+          );
+          return (
+          <div className="p-4">
+            {/* baseline vs validated comparison */}
+            <div className="mb-4 rounded-lg border border-white/10 bg-black/20 p-3">
+              <div className="mb-2 flex items-center gap-2 text-[11px] font-semibold">
+                <span className="w-28 text-white/50">เทียบผล</span>
+                <span className="w-20 text-right text-white/40">Baseline</span>
+                <span className="w-20 text-right text-accent-400">+ Validator</span>
+              </div>
+              {metric("เทรด", "total_trades", (x) => `${x ?? "—"}`)}
+              {metric("Win Rate", "win_rate", (x) => x != null ? `${x}%` : "—")}
+              {metric("Profit Factor", "profit_factor", (x) => x != null ? `${x}` : "∞")}
+              {metric("ผลตอบแทน", "total_return_pct", (x) => x != null ? `${x}%` : "—")}
+              {metric("Max DD", "max_drawdown_pct", (x) => x != null ? `${x}%` : "—")}
+              <p className="mt-2 border-t border-white/10 pt-2 text-[10px] text-white/40">
+                Signal Validator กรองสัญญาณหลอก (volume + ema-stack + macd&gt;0 + ไม่ไล่ราคา + cooldown)
+              </p>
+            </div>
+
+            {/* view toggle */}
+            <div className="mb-3 flex items-center gap-2">
+              {(["validated", "baseline"] as const).map((v) => (
+                <button key={v} onClick={() => setBtView(v)}
+                  className={`rounded-lg px-3 py-1 text-xs font-semibold transition ${
+                    btView === v ? "bg-accent-500 text-black" : "border border-white/15 text-white/60 hover:bg-white/10"
+                  }`}>
+                  {v === "validated" ? "+ Validator" : "Baseline"}
+                </button>
+              ))}
+              <span className="text-[10px] text-white/30">{view.bars} แท่ง · {btResult.timeframe}</span>
+            </div>
+
+            {/* stat cards for selected view */}
+            <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+              {[
+                { k: "เทรด", v: stats.total_trades, c: "#a78bfa" },
+                { k: "Win Rate", v: `${stats.win_rate}%`, c: "#4ade80" },
+                { k: "Profit Factor", v: stats.profit_factor ?? "∞", c: (stats.profit_factor ?? 0) >= 1.5 ? "#4ade80" : "#f59e0b" },
+                { k: "ผลตอบแทนรวม", v: `${stats.total_return_pct}%`, c: stats.total_return_pct >= 0 ? "#4ade80" : "#f87171" },
+                { k: "Max DD", v: `${stats.max_drawdown_pct}%`, c: "#f87171" },
+                { k: "Avg R", v: stats.avg_r, c: "#22d3ee" },
+              ].map(({ k, v, c }) => (
+                <div key={k} className="rounded-lg border border-white/10 bg-white/5 px-3 py-2">
+                  <p className="text-[10px] text-white/40">{k}</p>
+                  <p className="text-lg font-bold" style={{ color: c }}>{v}</p>
+                </div>
+              ))}
+            </div>
+
+            {/* verdict */}
+            <div className="mb-4 rounded-lg border border-white/10 bg-black/20 px-4 py-2 text-xs text-white/60">
+              {(() => {
+                const pf = stats.profit_factor;
+                if (stats.total_trades === 0) return "ไม่มีดีลในช่วงนี้ (เงื่อนไขเข้าไม่เกิด) — ลอง timeframe อื่น";
+                if (pf == null) return "ยังไม่มีดีลขาดทุน — ตัวอย่างน้อยเกินไป";
+                if (pf >= 1.5) return "✅ กลยุทธ์มี edge ในช่วงนี้ (PF ≥ 1.5) — แต่ต้องทดสอบหลายช่วง/หลายเหรียญก่อนเชื่อ";
+                if (pf >= 1.0) return "🟡 เกือบ breakeven — ยังไม่คุ้ม fee/ความเสี่ยง ควรปรับเงื่อนไข";
+                return "🔴 กลยุทธ์ขาดทุนในช่วงนี้ (PF < 1) — ควรปรับ filter หรือใช้เฉพาะตลาดที่เหมาะ";
+              })()}
+            </div>
+
+            {/* equity curve */}
+            {view.equity_curve?.length > 1 && (
+              <div className="mb-4">
+                <p className="mb-2 text-[11px] font-semibold text-white/50">Equity Curve</p>
+                <div className="flex h-20 items-end gap-px">
+                  {view.equity_curve.map((p: any, i: number) => {
+                    const eqs = view.equity_curve.map((x: any) => x.equity);
+                    const min = Math.min(...eqs), max = Math.max(...eqs);
+                    const h = max > min ? ((p.equity - min) / (max - min)) * 100 : 50;
+                    return (
+                      <div key={i} className="flex-1 rounded-t"
+                        style={{ height: `${Math.max(2, h)}%`, background: p.equity >= 1 ? "#22d3ee" : "#f87171" }}
+                        title={`#${p.i}: ${p.equity}`} />
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* trade list */}
+            <p className="mb-2 text-[11px] font-semibold text-white/50">
+              ประวัติเทรด ({view.trades.length})
+            </p>
+            <div className="max-h-64 overflow-y-auto rounded-lg border border-white/10">
+              {view.trades.map((t: any, i: number) => (
+                <div key={i} className="flex items-center gap-2 border-b border-white/5 px-3 py-1.5 text-[11px]">
+                  <span className={`w-12 shrink-0 font-bold ${t.result === "WIN" ? "text-green-400" : "text-red-400"}`}>
+                    {t.result}
+                  </span>
+                  <span className="w-28 shrink-0 text-white/40">{t.entry_at?.slice(0, 16)}</span>
+                  <span className="w-20 shrink-0 text-white/50">{t.exit_reason}</span>
+                  <span className={`w-16 shrink-0 text-right font-semibold ${t.pnl_pct >= 0 ? "text-green-400" : "text-red-400"}`}>
+                    {t.pnl_pct > 0 ? "+" : ""}{t.pnl_pct}%
+                  </span>
+                  <span className="w-12 shrink-0 text-right text-white/30">{t.r_multiple}R</span>
+                  <span className="hidden flex-1 truncate text-white/30 sm:block">{t.reason}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+          );
+        })()}
       </div>
     </div>
   );

@@ -9,6 +9,7 @@ import asyncio
 from app.trading.bitkub import BitkubClient, to_tradingview_symbol, BitkubError
 from app.trading.indicators import compute_features
 from app.trading.mtf import build_snapshot, build_daily_brief, MTFSnapshot
+from app.trading.backtest import run_backtest, BacktestParams
 
 
 async def analyze_symbol(client: BitkubClient, symbol: str) -> MTFSnapshot | None:
@@ -33,6 +34,43 @@ async def analyze_with_brief(client: BitkubClient, symbol: str) -> dict | None:
     if not snap:
         return None
     return {"snapshot": snap.to_dict(), "brief": build_daily_brief(snap)}
+
+
+async def backtest_symbol(
+    client: BitkubClient, symbol: str, timeframe: str = "4H", limit: int = 1500
+) -> dict | None:
+    """Run baseline vs validated backtest → both results for A/B comparison."""
+    tv = to_tradingview_symbol(symbol)
+    try:
+        candles = await client.fetch_ohlcv(tv, timeframe, limit=limit)
+    except BitkubError:
+        return None
+    if not candles:
+        return None
+
+    baseline = run_backtest(candles, BacktestParams(use_validator=False))
+    validated = run_backtest(candles, BacktestParams(use_validator=True))
+
+    def _delta(a: dict, b: dict, key: str):
+        av, bv = a.get(key), b.get(key)
+        if av is None or bv is None:
+            return None
+        return round(bv - av, 2)
+
+    bs, vs = baseline.stats, validated.stats
+    return {
+        "symbol": tv,
+        "timeframe": timeframe,
+        "bars": baseline.bars,
+        "baseline": baseline.to_dict(),
+        "validated": validated.to_dict(),
+        "delta": {
+            "profit_factor": _delta(bs, vs, "profit_factor"),
+            "win_rate": _delta(bs, vs, "win_rate"),
+            "total_return_pct": _delta(bs, vs, "total_return_pct"),
+            "total_trades": _delta(bs, vs, "total_trades"),
+        },
+    }
 
 
 # rank: BUY first, then by strength/alignment desc

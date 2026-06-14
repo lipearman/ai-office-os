@@ -10,8 +10,8 @@ from app.schemas.trading import (
     WatchlistItemOut, WatchlistItemCreate, WatchlistItemUpdate,
 )
 from app.api.deps import get_current_user
-from app.trading.bitkub import BitkubClient, to_tradingview_symbol
-from app.trading.service import analyze_with_brief, scan_symbols
+from app.trading.bitkub import BitkubClient, to_tradingview_symbol, TIMEFRAMES
+from app.trading.service import analyze_with_brief, scan_symbols, backtest_symbol
 
 router = APIRouter(prefix="/trading", tags=["trading"])
 
@@ -39,6 +39,25 @@ async def analyze(symbol: str, current_user: User = Depends(get_current_user)):
     """Full Multi-Timeframe top-down analysis + daily brief for one symbol."""
     client = BitkubClient()
     result = await analyze_with_brief(client, symbol)
+    if not result:
+        raise HTTPException(status_code=404, detail=f"No data for {symbol}")
+    return result
+
+
+# ── backtest ────────────────────────────────────────────────────
+@router.get("/backtest/{symbol}")
+async def backtest(
+    symbol: str,
+    timeframe: str = "4H",
+    limit: int = 1500,
+    current_user: User = Depends(get_current_user),
+):
+    """Run the EMA-pullback backtest over history → trades + stats."""
+    if timeframe not in TIMEFRAMES:
+        raise HTTPException(status_code=400, detail=f"timeframe must be one of {list(TIMEFRAMES)}")
+    limit = max(100, min(limit, 2000))
+    client = BitkubClient()
+    result = await backtest_symbol(client, symbol, timeframe, limit)
     if not result:
         raise HTTPException(status_code=404, detail=f"No data for {symbol}")
     return result
