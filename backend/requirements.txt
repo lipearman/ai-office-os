@@ -27,3 +27,6 @@ python-dotenv==1.0.1
 structlog==24.4.0
 email-validator>=2.2.0
 pypdf>=5.0.0
+# trading / quant core
+pandas>=2.2.0
+numpy>=2.0.0

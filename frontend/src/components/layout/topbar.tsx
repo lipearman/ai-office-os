@@ -12,12 +12,13 @@ import {
   LayoutDashboard, Users, Bot, Workflow, BookOpen,
   Settings, LogOut, Building2, Wrench, Brain, BarChart3,
   MessagesSquare, Shield, ChevronDown, Check,
-  Search, Bell, LayoutGrid, User, Cpu,
+  Search, Bell, LayoutGrid, User, Cpu, TrendingUp,
 } from "lucide-react";
 
 const navItems = [
   { href: "/dashboard",    icon: LayoutDashboard, label: "Dashboard" },
   { href: "/office",       icon: Building2,       label: "Office" },
+  { href: "/trading",      icon: TrendingUp,      label: "Trading" },
   { href: "/agents",       icon: Bot,             label: "Agents" },
   { href: "/meeting",      icon: MessagesSquare,  label: "AI Meeting" },
   { href: "/tools",        icon: Wrench,          label: "Tools" },
