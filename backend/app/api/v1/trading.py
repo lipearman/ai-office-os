@@ -11,7 +11,9 @@ from app.schemas.trading import (
 )
 from app.api.deps import get_current_user
 from app.trading.bitkub import BitkubClient, to_tradingview_symbol, TIMEFRAMES
-from app.trading.service import analyze_with_brief, scan_symbols, backtest_symbol
+from app.trading.service import (
+    analyze_with_brief, scan_symbols, backtest_symbol, optimize_symbol, ml_symbol,
+)
 
 router = APIRouter(prefix="/trading", tags=["trading"])
 
@@ -58,6 +60,51 @@ async def backtest(
     limit = max(100, min(limit, 2000))
     client = BitkubClient()
     result = await backtest_symbol(client, symbol, timeframe, limit)
+    if not result:
+        raise HTTPException(status_code=404, detail=f"No data for {symbol}")
+    return result
+
+
+# ── auto-optimizer (walk-forward) ───────────────────────────────
+@router.get("/optimize/{symbol}")
+async def optimize_strategy(
+    symbol: str,
+    timeframe: str = "1H",
+    limit: int = 2000,
+    current_user: User = Depends(get_current_user),
+):
+    """Walk-forward param optimization → suggested params + OOS evidence.
+
+    Human gate: returns a suggestion only; does not change the live strategy.
+    """
+    if timeframe not in TIMEFRAMES:
+        raise HTTPException(status_code=400, detail=f"timeframe must be one of {list(TIMEFRAMES)}")
+    limit = max(500, min(limit, 2000))
+    client = BitkubClient()
+    result = await optimize_symbol(client, symbol, timeframe, limit)
+    if not result:
+        raise HTTPException(status_code=404, detail=f"No data for {symbol}")
+    return result
+
+
+# ── ML ensemble report ──────────────────────────────────────────
+@router.get("/ml/{symbol}")
+async def ml_strategy(
+    symbol: str,
+    timeframe: str = "1H",
+    limit: int = 2000,
+    horizon: int = 8,
+    current_user: User = Depends(get_current_user),
+):
+    """ML ensemble (XGBoost+Logistic) walk-forward report + rule-vs-ensemble.
+
+    Human gate: evidence only; the model is an advisory vote, it does not trade.
+    """
+    if timeframe not in TIMEFRAMES:
+        raise HTTPException(status_code=400, detail=f"timeframe must be one of {list(TIMEFRAMES)}")
+    limit = max(500, min(limit, 2000))
+    client = BitkubClient()
+    result = await ml_symbol(client, symbol, timeframe, limit, horizon)
     if not result:
         raise HTTPException(status_code=404, detail=f"No data for {symbol}")
     return result

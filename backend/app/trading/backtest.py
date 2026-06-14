@@ -70,37 +70,142 @@ class BacktestResult:
         }
 
 
-def _valid(row) -> bool:
-    for c in ("ema20", "ema50", "ema200", "rsi14", "adx14", "atr14", "macd", "macd_signal"):
-        v = row[c]
-        if v is None or (isinstance(v, float) and math.isnan(v)):
+_ARR_COLS = (
+    "open", "high", "low", "close", "ema20", "ema50", "ema200",
+    "rsi14", "macd", "macd_signal", "atr14", "adx14", "volume_ratio",
+)
+
+
+def prepare(df) -> dict:
+    """Extract numpy arrays from the indicator DataFrame for a fast loop.
+
+    The optimizer/walk-forward calls simulate() hundreds of times; indexing
+    numpy arrays is far cheaper than df.iloc per row.
+    """
+    C = {c: df[c].to_numpy(dtype="float64") for c in _ARR_COLS}
+    C["ts"] = df["ts"].astype(str).to_numpy()
+    return C
+
+
+_VALID_COLS = ("ema20", "ema50", "ema200", "rsi14", "adx14", "atr14", "macd", "macd_signal")
+
+
+def _valid_i(C: dict, i: int) -> bool:
+    for c in _VALID_COLS:
+        if math.isnan(C[c][i]):
             return False
     return True
 
 
-def _entry_ok(row, p: BacktestParams) -> bool:
-    bias_up = row["close"] > row["ema200"] and row["ema50"] > row["ema200"]
-    trending = row["adx14"] >= p.adx_min
-    trigger = (
-        row["close"] > row["ema20"]
-        and p.rsi_lo <= row["rsi14"] <= p.rsi_hi
-        and row["macd"] >= row["macd_signal"]
-    )
+def _entry_ok_i(C: dict, i: int, p: BacktestParams) -> bool:
+    close = C["close"][i]; ema20 = C["ema20"][i]; ema50 = C["ema50"][i]
+    ema200 = C["ema200"][i]; rsi = C["rsi14"][i]; macd = C["macd"][i]
+    bias_up = close > ema200 and ema50 > ema200
+    trending = C["adx14"][i] >= p.adx_min
+    trigger = close > ema20 and p.rsi_lo <= rsi <= p.rsi_hi and macd >= C["macd_signal"][i]
     if not (bias_up and trending and trigger):
         return False
-
     if p.use_validator:
-        # ── extra confluence to filter false signals ──
-        if row["volume_ratio"] < p.vol_min:
+        if C["volume_ratio"][i] < p.vol_min:
             return False
-        if p.require_ema_stack and not (row["ema20"] > row["ema50"]):
+        if p.require_ema_stack and not (ema20 > ema50):
             return False
-        if p.require_macd_positive and not (row["macd"] > 0):
+        if p.require_macd_positive and not (macd > 0):
             return False
-        if row["close"] > row["ema20"] * (1 + p.max_ext_pct):
+        if close > ema20 * (1 + p.max_ext_pct):
             return False  # overextended — don't chase
-
     return True
+
+
+def simulate(C: dict, p: BacktestParams, lo: int = 0, hi: int | None = None,
+             ml_prob=None, ml_threshold: float = 0.5) -> list[Trade]:
+    """Run the long-only state machine over rows [lo, hi) of prepared arrays C.
+
+    Operates on precomputed numpy arrays so the optimizer/walk-forward can reuse
+    one computation and evaluate any sub-range with no warmup loss (indicators at
+    bar i use only data up to i — no look-ahead).
+
+    `ml_prob` (optional): array aligned to C; when given, an entry also requires
+    ml_prob[i] >= ml_threshold (ensemble: rule AND model agree).
+    """
+    if hi is None:
+        hi = len(C["close"])
+    close_a = C["close"]; high_a = C["high"]; low_a = C["low"]
+    ema50_a = C["ema50"]; rsi_a = C["rsi14"]; atr_a = C["atr14"]
+    adx_a = C["adx14"]; ts_a = C["ts"]
+    trades: list[Trade] = []
+    fee_round = 2 * p.fee
+    in_pos = False
+    entry_price = stop = target = 0.0
+    entry_idx = 0
+    entry_reason = ""
+    last_loss_idx = -10_000
+
+    for i in range(lo, hi):
+        if not _valid_i(C, i):
+            continue
+
+        if not in_pos:
+            if p.use_validator and (i - last_loss_idx) <= p.cooldown_bars:
+                continue
+            if _entry_ok_i(C, i, p):
+                if ml_prob is not None and ml_prob[i] < ml_threshold:
+                    continue  # ML vote rejects
+                entry_price = close_a[i]
+                atr = atr_a[i] or entry_price * 0.01
+                stop = entry_price - p.stop_atr * atr
+                target = entry_price + p.tp_rr * (entry_price - stop)
+                entry_idx = i
+                ml_txt = f", ML {ml_prob[i]:.2f}" if ml_prob is not None else ""
+                entry_reason = f"EMA pullback (RSI {rsi_a[i]:.0f}, ADX {adx_a[i]:.0f}{ml_txt})"
+                in_pos = True
+            continue
+
+        exit_price = None
+        exit_reason = ""
+        if low_a[i] <= stop:
+            exit_price, exit_reason = stop, "stop_loss"
+        elif high_a[i] >= target:
+            exit_price, exit_reason = target, "take_profit"
+        elif close_a[i] < ema50_a[i] or rsi_a[i] > p.rsi_exit:
+            exit_price, exit_reason = close_a[i], "signal_exit"
+
+        if exit_price is not None:
+            net = (exit_price / entry_price - 1.0) - fee_round
+            risk = entry_price - stop
+            trades.append(Trade(
+                entry_at=str(ts_a[entry_idx]),
+                entry_price=round(entry_price, 2),
+                exit_at=str(ts_a[i]),
+                exit_price=round(exit_price, 2),
+                exit_reason=exit_reason,
+                bars_held=i - entry_idx,
+                pnl_pct=round(net * 100, 3),
+                r_multiple=round((exit_price - entry_price) / risk if risk > 0 else 0.0, 3),
+                result="WIN" if net > 0 else ("LOSS" if net < 0 else "BREAKEVEN"),
+                reason=entry_reason,
+            ))
+            in_pos = False
+            if net < 0:
+                last_loss_idx = i
+
+    if in_pos:
+        exit_price = close_a[hi - 1]
+        net = (exit_price / entry_price - 1.0) - fee_round
+        risk = entry_price - stop
+        trades.append(Trade(
+            entry_at=str(ts_a[entry_idx]),
+            entry_price=round(entry_price, 2),
+            exit_at=str(ts_a[hi - 1]),
+            exit_price=round(exit_price, 2),
+            exit_reason="eod",
+            bars_held=(hi - 1) - entry_idx,
+            pnl_pct=round(net * 100, 3),
+            r_multiple=round((exit_price - entry_price) / risk if risk > 0 else 0.0, 3),
+            result="WIN" if net > 0 else ("LOSS" if net < 0 else "BREAKEVEN"),
+            reason=entry_reason,
+        ))
+    return trades
 
 
 def run_backtest(
@@ -115,88 +220,7 @@ def run_backtest(
         res.stats = {"note": "ข้อมูลไม่พอสำหรับ backtest", "total_trades": 0}
         return res
 
-    fee_round = 2 * p.fee
-    in_pos = False
-    entry_price = stop = target = 0.0
-    entry_idx = 0
-    entry_reason = ""
-    last_loss_idx = -10_000   # for cooldown
-
-    for i in range(len(df)):
-        row = df.iloc[i]
-        if not _valid(row):
-            continue
-
-        if not in_pos:
-            # cooldown after a loss (validator only)
-            if p.use_validator and (i - last_loss_idx) <= p.cooldown_bars:
-                continue
-            if _entry_ok(row, p):
-                entry_price = float(row["close"])
-                atr = float(row["atr14"]) or entry_price * 0.01
-                stop = entry_price - p.stop_atr * atr
-                risk = entry_price - stop
-                target = entry_price + p.tp_rr * risk
-                entry_idx = i
-                entry_reason = (
-                    f"EMA pullback (RSI {row['rsi14']:.0f}, ADX {row['adx14']:.0f})"
-                )
-                in_pos = True
-            continue
-
-        # ── in position: check exits on this bar ──
-        low = float(row["low"]); high = float(row["high"]); close = float(row["close"])
-        exit_price = None
-        exit_reason = ""
-        # stop checked first (conservative: assume worst case within the bar)
-        if low <= stop:
-            exit_price, exit_reason = stop, "stop_loss"
-        elif high >= target:
-            exit_price, exit_reason = target, "take_profit"
-        elif close < float(row["ema50"]) or row["rsi14"] > p.rsi_exit:
-            exit_price, exit_reason = close, "signal_exit"
-
-        if exit_price is not None:
-            gross = exit_price / entry_price - 1.0
-            net = gross - fee_round
-            risk = entry_price - stop
-            r_mult = (exit_price - entry_price) / risk if risk > 0 else 0.0
-            res.trades.append(Trade(
-                entry_at=str(df.iloc[entry_idx]["ts"]),
-                entry_price=round(entry_price, 2),
-                exit_at=str(row["ts"]),
-                exit_price=round(exit_price, 2),
-                exit_reason=exit_reason,
-                bars_held=i - entry_idx,
-                pnl_pct=round(net * 100, 3),
-                r_multiple=round(r_mult, 3),
-                result="WIN" if net > 0 else ("LOSS" if net < 0 else "BREAKEVEN"),
-                reason=entry_reason,
-            ))
-            in_pos = False
-            if net < 0:
-                last_loss_idx = i
-
-    # close any open position at the last bar
-    if in_pos:
-        last = df.iloc[-1]
-        exit_price = float(last["close"])
-        gross = exit_price / entry_price - 1.0
-        net = gross - fee_round
-        risk = entry_price - stop
-        res.trades.append(Trade(
-            entry_at=str(df.iloc[entry_idx]["ts"]),
-            entry_price=round(entry_price, 2),
-            exit_at=str(last["ts"]),
-            exit_price=round(exit_price, 2),
-            exit_reason="eod",
-            bars_held=len(df) - 1 - entry_idx,
-            pnl_pct=round(net * 100, 3),
-            r_multiple=round((exit_price - entry_price) / risk if risk > 0 else 0.0, 3),
-            result="WIN" if net > 0 else ("LOSS" if net < 0 else "BREAKEVEN"),
-            reason=entry_reason,
-        ))
-
+    res.trades = simulate(prepare(df), p, 0, len(df))
     res.stats, res.equity_curve = _compute_stats(res.trades)
     return res
 

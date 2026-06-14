@@ -10,6 +10,8 @@ from app.trading.bitkub import BitkubClient, to_tradingview_symbol, BitkubError
 from app.trading.indicators import compute_features
 from app.trading.mtf import build_snapshot, build_daily_brief, MTFSnapshot
 from app.trading.backtest import run_backtest, BacktestParams
+from app.trading.optimizer import optimize
+from app.trading.ml import ml_report
 
 
 async def analyze_symbol(client: BitkubClient, symbol: str) -> MTFSnapshot | None:
@@ -71,6 +73,35 @@ async def backtest_symbol(
             "total_trades": _delta(bs, vs, "total_trades"),
         },
     }
+
+
+async def optimize_symbol(
+    client: BitkubClient, symbol: str, timeframe: str = "1H", limit: int = 2000
+) -> dict | None:
+    """Walk-forward auto-optimize → suggested params + OOS evidence (human gate)."""
+    tv = to_tradingview_symbol(symbol)
+    try:
+        candles = await client.fetch_ohlcv(tv, timeframe, limit=limit)
+    except BitkubError:
+        return None
+    if not candles:
+        return None
+    return await asyncio.to_thread(optimize, candles, 4)
+
+
+async def ml_symbol(
+    client: BitkubClient, symbol: str, timeframe: str = "1H", limit: int = 2000,
+    horizon: int = 8,
+) -> dict | None:
+    """ML ensemble report (walk-forward) + rule-vs-ensemble compare (human gate)."""
+    tv = to_tradingview_symbol(symbol)
+    try:
+        candles = await client.fetch_ohlcv(tv, timeframe, limit=limit)
+    except BitkubError:
+        return None
+    if not candles:
+        return None
+    return await asyncio.to_thread(ml_report, candles, horizon)
 
 
 # rank: BUY first, then by strength/alignment desc

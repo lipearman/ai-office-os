@@ -62,6 +62,12 @@ export default function TradingPage() {
   const [btLoading, setBtLoading] = useState(false);
   const [btView, setBtView]       = useState<"validated" | "baseline">("validated");
 
+  // ── auto-optimizer + ML (AI, human-gated) ──
+  const [optResult, setOptResult] = useState<any>(null);
+  const [optLoading, setOptLoading] = useState(false);
+  const [mlResult, setMlResult]   = useState<any>(null);
+  const [mlLoading, setMlLoading] = useState(false);
+
   // ── load watchlist + symbol list ──
   const loadWatchlist = () => {
     if (!current) return;
@@ -146,6 +152,38 @@ export default function TradingPage() {
       setError(e?.response?.data?.detail ?? "backtest ไม่สำเร็จ");
     } finally {
       setBtLoading(false);
+    }
+  };
+
+  const runOptimize = async () => {
+    if (!btSymbol.trim()) return;
+    setOptLoading(true);
+    setOptResult(null);
+    try {
+      const r = await api.get(`/trading/optimize/${btSymbol.trim().toUpperCase()}`, {
+        params: { timeframe: btTf, limit: 2000 },
+      });
+      setOptResult(r.data);
+    } catch (e: any) {
+      setError(e?.response?.data?.detail ?? "optimize ไม่สำเร็จ");
+    } finally {
+      setOptLoading(false);
+    }
+  };
+
+  const runML = async () => {
+    if (!btSymbol.trim()) return;
+    setMlLoading(true);
+    setMlResult(null);
+    try {
+      const r = await api.get(`/trading/ml/${btSymbol.trim().toUpperCase()}`, {
+        params: { timeframe: btTf, limit: 2000 },
+      });
+      setMlResult(r.data);
+    } catch (e: any) {
+      setError(e?.response?.data?.detail ?? "ML ไม่สำเร็จ");
+    } finally {
+      setMlLoading(false);
     }
   };
 
@@ -505,6 +543,152 @@ export default function TradingPage() {
           </div>
           );
         })()}
+      </div>
+
+      {/* ── AI: Auto-optimizer + ML ensemble (human-gated) ── */}
+      <div className="mt-6 grid gap-4 lg:grid-cols-2">
+        {/* Auto-optimizer */}
+        <div className="rounded-xl border border-white/10 bg-[#141228]/70 backdrop-blur-md">
+          <div className="flex items-center gap-2 border-b border-white/10 px-4 py-3">
+            <span className="text-sm font-semibold text-white/70">🤖 Auto-Optimizer</span>
+            <span className="text-[10px] text-white/30">walk-forward</span>
+            <div className="flex-1" />
+            <button onClick={runOptimize} disabled={optLoading}
+              className="flex items-center gap-1.5 rounded-lg bg-primary-500 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-primary-600 disabled:opacity-50">
+              <RefreshCw size={13} className={optLoading ? "animate-spin" : ""} />
+              {optLoading ? "กำลังหา…" : "หาค่าที่ดีสุด"}
+            </button>
+          </div>
+          {!optResult && !optLoading && (
+            <p className="px-4 py-6 text-center text-xs text-white/30">
+              ค้นหาพารามิเตอร์ที่ดีสุด ({btSymbol} {btTf}) แล้วพิสูจน์ด้วย out-of-sample
+            </p>
+          )}
+          {optLoading && <p className="px-4 py-6 text-center text-xs text-white/40">กำลัง search + walk-forward…</p>}
+          {optResult && !optResult.error && (
+            <div className="space-y-3 p-4">
+              <div className="rounded-lg border border-white/10 bg-black/20 p-3 text-[11px]">
+                <p className="mb-1 text-white/40">พารามิเตอร์ที่แนะนำ</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {Object.entries(optResult.suggested.params).map(([k, v]: any) => (
+                    <span key={k} className="rounded bg-white/5 px-2 py-0.5 text-white/70">
+                      {k}: <span className="font-semibold text-accent-400">{String(v)}</span>
+                    </span>
+                  ))}
+                </div>
+              </div>
+              {/* in-sample vs OOS */}
+              <div className="rounded-lg border border-white/10 bg-black/20 p-3 text-[11px]">
+                <div className="mb-1 flex font-semibold text-white/50">
+                  <span className="flex-1">PF</span>
+                  <span className="w-20 text-right">In-Sample</span>
+                  <span className="w-20 text-right text-accent-400">OOS (จริง)</span>
+                </div>
+                <div className="flex text-white/70">
+                  <span className="flex-1">Profit Factor</span>
+                  <span className="w-20 text-right text-white/50">{optResult.suggested.in_sample_stats?.profit_factor ?? "—"}</span>
+                  <span className="w-20 text-right font-semibold text-white">{optResult.walk_forward.oos_stats?.profit_factor ?? "—"}</span>
+                </div>
+                <div className="flex text-white/70">
+                  <span className="flex-1">ผลตอบแทน</span>
+                  <span className="w-20 text-right text-white/50">{optResult.suggested.in_sample_stats?.total_return_pct ?? "—"}%</span>
+                  <span className="w-20 text-right font-semibold text-white">{optResult.walk_forward.oos_stats?.total_return_pct ?? "—"}%</span>
+                </div>
+                <div className="flex text-white/70">
+                  <span className="flex-1">เทรด (OOS)</span>
+                  <span className="w-20 text-right text-white/50">—</span>
+                  <span className="w-20 text-right font-semibold text-white">{optResult.walk_forward.oos_stats?.total_trades ?? 0}</span>
+                </div>
+              </div>
+              <div className="rounded-lg border border-white/10 bg-black/20 px-3 py-2 text-[11px] text-white/60">
+                {optResult.verdict}
+              </div>
+              <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[10px] text-amber-300/80">
+                🔒 {optResult.human_gate}
+              </div>
+            </div>
+          )}
+          {optResult?.error && <p className="px-4 py-6 text-center text-xs text-white/40">{optResult.error}</p>}
+        </div>
+
+        {/* ML ensemble */}
+        <div className="rounded-xl border border-white/10 bg-[#141228]/70 backdrop-blur-md">
+          <div className="flex items-center gap-2 border-b border-white/10 px-4 py-3">
+            <span className="text-sm font-semibold text-white/70">🧠 ML Ensemble</span>
+            <span className="text-[10px] text-white/30">XGBoost + Logistic</span>
+            <div className="flex-1" />
+            <button onClick={runML} disabled={mlLoading}
+              className="flex items-center gap-1.5 rounded-lg bg-primary-500 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-primary-600 disabled:opacity-50">
+              <RefreshCw size={13} className={mlLoading ? "animate-spin" : ""} />
+              {mlLoading ? "กำลังเทรน…" : "เทรน + ประเมิน"}
+            </button>
+          </div>
+          {!mlResult && !mlLoading && (
+            <p className="px-4 py-6 text-center text-xs text-white/30">
+              เทรนโมเดลทำนาย P(ขึ้น) แล้ววัด out-of-sample + เทียบ rule vs ensemble
+            </p>
+          )}
+          {mlLoading && <p className="px-4 py-6 text-center text-xs text-white/40">กำลังเทรน walk-forward…</p>}
+          {mlResult && !mlResult.error && (
+            <div className="space-y-3 p-4">
+              <div className="grid grid-cols-3 gap-2 text-center">
+                {[
+                  { k: "AUC (OOS)", v: mlResult.walk_forward?.auc ?? "—", c: (mlResult.walk_forward?.auc ?? 0) >= 0.58 ? "#4ade80" : "#f59e0b" },
+                  { k: "Accuracy", v: mlResult.walk_forward?.accuracy ?? "—", c: "#22d3ee" },
+                  { k: "Samples", v: mlResult.samples ?? "—", c: "#a78bfa" },
+                ].map(({ k, v, c }) => (
+                  <div key={k} className="rounded-lg border border-white/10 bg-white/5 px-2 py-1.5">
+                    <p className="text-[9px] text-white/40">{k}</p>
+                    <p className="text-sm font-bold" style={{ color: c }}>{v}</p>
+                  </div>
+                ))}
+              </div>
+              {/* rule vs ensemble */}
+              {mlResult.ensemble_compare && (
+                <div className="rounded-lg border border-white/10 bg-black/20 p-3 text-[11px]">
+                  <div className="mb-1 flex font-semibold text-white/50">
+                    <span className="flex-1">OOS</span>
+                    <span className="w-16 text-right">Rule</span>
+                    <span className="w-20 text-right text-accent-400">+ ML</span>
+                  </div>
+                  {[
+                    ["เทรด", "total_trades", ""],
+                    ["Win Rate", "win_rate", "%"],
+                    ["ผลตอบแทน", "total_return_pct", "%"],
+                  ].map(([label, key, unit]) => (
+                    <div key={key} className="flex text-white/70">
+                      <span className="flex-1">{label}</span>
+                      <span className="w-16 text-right text-white/50">{mlResult.ensemble_compare.rule_only?.[key] ?? "—"}{unit}</span>
+                      <span className="w-20 text-right font-semibold text-white">{mlResult.ensemble_compare.ensemble?.[key] ?? "—"}{unit}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {/* top features */}
+              {mlResult.feature_importance?.length > 0 && (
+                <div>
+                  <p className="mb-1 text-[10px] font-semibold uppercase text-white/40">Feature importance</p>
+                  {mlResult.feature_importance.slice(0, 4).map((f: any) => (
+                    <div key={f.feature} className="flex items-center gap-2 text-[10px]">
+                      <span className="w-24 text-white/50">{f.feature}</span>
+                      <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-white/5">
+                        <div className="h-full bg-accent-500" style={{ width: `${f.importance * 100}%` }} />
+                      </div>
+                      <span className="w-10 text-right text-white/30">{f.importance}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div className="rounded-lg border border-white/10 bg-black/20 px-3 py-2 text-[11px] text-white/60">
+                {mlResult.verdict}
+              </div>
+              <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[10px] text-amber-300/80">
+                🔒 {mlResult.human_gate}
+              </div>
+            </div>
+          )}
+          {mlResult?.error && <p className="px-4 py-6 text-center text-xs text-white/40">{mlResult.error}</p>}
+        </div>
       </div>
     </div>
   );
