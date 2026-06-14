@@ -195,8 +195,19 @@ async def scan_watchlist(
             WatchlistItem.enabled == True,  # noqa: E712
         )
     )
-    symbols = [w.symbol for w in result.scalars().all()]
+    items = result.scalars().all()
+    symbols = [w.symbol for w in items]
     if not symbols:
         return {"results": [], "count": 0}
+    # map symbol → assigned strategy (from optimizer "Apply")
+    assigned: dict[str, dict | None] = {}
+    for w in items:
+        cfg = (w.strategies or [None])[0] if w.strategies else None
+        assigned[w.symbol] = (
+            {"strategy": cfg.get("strategy"), "timeframe": cfg.get("timeframe")}
+            if isinstance(cfg, dict) else None
+        )
     results = await scan_symbols(symbols)
+    for r in results:
+        r["assigned_strategy"] = assigned.get(r["symbol"])
     return {"results": results, "count": len(results)}

@@ -20,6 +20,7 @@ from app.trading.indicators import indicator_frame
 
 @dataclass
 class BacktestParams:
+    strategy: str = "ema_pullback"   # "ema_pullback" (trend) | "rsi_reversion" (range)
     adx_min: float = 22.0
     rsi_lo: float = 45.0
     rsi_hi: float = 68.0
@@ -27,6 +28,10 @@ class BacktestParams:
     tp_rr: float = 2.0
     fee: float = 0.0025          # per side
     rsi_exit: float = 70.0
+    # ── rsi_reversion template ──
+    rsi_os: float = 30.0         # oversold entry
+    rsi_tp: float = 55.0         # take-profit (mean revert)
+    adx_max: float = 25.0        # only in range (low ADX)
     # ── Signal Validator (กรองสัญญาณหลอก) — off = baseline ──
     use_validator: bool = False
     vol_min: float = 1.2         # volume confirmation: vol >= vol_min * avg
@@ -73,6 +78,7 @@ class BacktestResult:
 _ARR_COLS = (
     "open", "high", "low", "close", "ema20", "ema50", "ema200",
     "rsi14", "macd", "macd_signal", "atr14", "adx14", "volume_ratio",
+    "bb_mid", "bb_lower",
 )
 
 
@@ -98,6 +104,18 @@ def _valid_i(C: dict, i: int) -> bool:
 
 
 def _entry_ok_i(C: dict, i: int, p: BacktestParams) -> bool:
+    if p.strategy == "rsi_reversion":
+        # buy oversold dips in a range (low ADX), near/below lower band
+        close = C["close"][i]; rsi = C["rsi14"][i]
+        if not (rsi <= p.rsi_os and close <= C["bb_lower"][i] and C["adx14"][i] <= p.adx_max):
+            return False
+        if close < C["ema200"][i] * 0.85:
+            return False  # avoid catching a falling knife in a deep downtrend
+        if p.use_validator and C["volume_ratio"][i] < p.vol_min:
+            return False
+        return True
+
+    # default: ema_pullback (trend)
     close = C["close"][i]; ema20 = C["ema20"][i]; ema50 = C["ema50"][i]
     ema200 = C["ema200"][i]; rsi = C["rsi14"][i]; macd = C["macd"][i]
     bias_up = close > ema200 and ema50 > ema200
@@ -117,6 +135,13 @@ def _entry_ok_i(C: dict, i: int, p: BacktestParams) -> bool:
     return True
 
 
+def _exit_signal_i(C: dict, i: int, p: BacktestParams) -> bool:
+    """Strategy-specific discretionary exit (besides stop/target)."""
+    if p.strategy == "rsi_reversion":
+        return C["rsi14"][i] >= p.rsi_tp or C["close"][i] >= C["bb_mid"][i]
+    return C["close"][i] < C["ema50"][i] or C["rsi14"][i] > p.rsi_exit
+
+
 def simulate(C: dict, p: BacktestParams, lo: int = 0, hi: int | None = None,
              ml_prob=None, ml_threshold: float = 0.5) -> list[Trade]:
     """Run the long-only state machine over rows [lo, hi) of prepared arrays C.
@@ -131,7 +156,7 @@ def simulate(C: dict, p: BacktestParams, lo: int = 0, hi: int | None = None,
     if hi is None:
         hi = len(C["close"])
     close_a = C["close"]; high_a = C["high"]; low_a = C["low"]
-    ema50_a = C["ema50"]; rsi_a = C["rsi14"]; atr_a = C["atr14"]
+    rsi_a = C["rsi14"]; atr_a = C["atr14"]
     adx_a = C["adx14"]; ts_a = C["ts"]
     trades: list[Trade] = []
     fee_round = 2 * p.fee
@@ -157,7 +182,8 @@ def simulate(C: dict, p: BacktestParams, lo: int = 0, hi: int | None = None,
                 target = entry_price + p.tp_rr * (entry_price - stop)
                 entry_idx = i
                 ml_txt = f", ML {ml_prob[i]:.2f}" if ml_prob is not None else ""
-                entry_reason = f"EMA pullback (RSI {rsi_a[i]:.0f}, ADX {adx_a[i]:.0f}{ml_txt})"
+                label = "RSI reversion" if p.strategy == "rsi_reversion" else "EMA pullback"
+                entry_reason = f"{label} (RSI {rsi_a[i]:.0f}, ADX {adx_a[i]:.0f}{ml_txt})"
                 in_pos = True
             continue
 
@@ -167,7 +193,7 @@ def simulate(C: dict, p: BacktestParams, lo: int = 0, hi: int | None = None,
             exit_price, exit_reason = stop, "stop_loss"
         elif high_a[i] >= target:
             exit_price, exit_reason = target, "take_profit"
-        elif close_a[i] < ema50_a[i] or rsi_a[i] > p.rsi_exit:
+        elif _exit_signal_i(C, i, p):
             exit_price, exit_reason = close_a[i], "signal_exit"
 
         if exit_price is not None:

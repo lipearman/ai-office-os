@@ -1,66 +1,75 @@
-"""Auto-optimizer with walk-forward validation.
+"""Smart auto-optimizer — multi-template, OOS-selection, holdout-verdict.
 
-Searches a small grid of strategy parameters and reports:
-  - suggested params (optimized over all usable history) — for going forward
-  - in-sample stats (will look optimistic — overfit risk)
-  - WALK-FORWARD out-of-sample stats (the honest number to trust)
-  - a verdict comparing OOS vs default + warning if it overfits
+Smarter than picking the best in-sample params (which overfits):
+  1. tries MULTIPLE strategy templates (trend pullback + range reversion),
+  2. selects the config by aggregate OUT-OF-SAMPLE robustness across several
+     selection folds (not in-sample best),
+  3. validates the winner on a final HOLDOUT segment never used in selection,
+  4. is willing to recommend "don't trade" when nothing has an edge.
 
-HUMAN GATE: this only *suggests* parameters. It never changes the live
-strategy or trades anything. The user reviews the OOS evidence and decides.
+This lets each symbol get its own best-fitting strategy.
+
+HUMAN GATE: returns a suggestion only — never changes live config or trades.
+The user reviews the holdout evidence and clicks Apply.
 """
 from __future__ import annotations
 
 import itertools
-import math
 
 from app.trading.bitkub import Candle
 from app.trading.indicators import indicator_frame
-from app.trading.backtest import (
-    BacktestParams, prepare, simulate, _compute_stats,
-)
+from app.trading.backtest import BacktestParams, prepare, simulate, _compute_stats
 
-# small grid — keep fast; expand later
-PARAM_GRID = {
-    "adx_min": [18.0, 22.0, 26.0],
-    "stop_atr": [1.0, 1.5, 2.0],
-    "tp_rr": [1.5, 2.0, 3.0],
-    "use_validator": [False, True],
-}
-
-WARMUP = 210          # skip indicator warmup (EMA200) when evaluating
-MIN_TRADES = 6        # ignore param sets with too few trades to be meaningful
+WARMUP = 210
+MIN_TRADES_SEL = 12    # min pooled trades across selection folds to be considered
+MIN_TRADES_HOLD = 3    # min trades on holdout to trust the verdict
+FREQ_TARGET = 24       # pooled trades for full "tradeable enough" credit
 
 
-def _combos() -> list[dict]:
-    keys = list(PARAM_GRID)
-    return [dict(zip(keys, vals)) for vals in itertools.product(*PARAM_GRID.values())]
+def _candidates() -> list[dict]:
+    cands: list[dict] = []
+    # trend: EMA pullback
+    for adx, stop, tp, val in itertools.product(
+        [18.0, 22.0, 26.0], [1.0, 1.5, 2.0], [1.5, 2.0, 3.0], [False, True]
+    ):
+        cands.append({"strategy": "ema_pullback", "adx_min": adx,
+                      "stop_atr": stop, "tp_rr": tp, "use_validator": val})
+    # range: RSI reversion
+    for rsi_os, stop, tp, amax in itertools.product(
+        [25.0, 30.0, 35.0], [1.0, 1.5, 2.0], [1.5, 2.0], [25.0, 35.0]
+    ):
+        cands.append({"strategy": "rsi_reversion", "rsi_os": rsi_os,
+                      "stop_atr": stop, "tp_rr": tp, "adx_max": amax})
+    return cands
 
 
-def _score(stats: dict) -> float:
-    """Robust objective: profit factor (capped) + return tilt, gated by #trades."""
-    n = stats.get("total_trades", 0)
-    if n < MIN_TRADES:
-        return -1e9
-    pf = stats.get("profit_factor")
-    pf_v = pf if pf is not None else 5.0          # no losses → treat as strong
-    ret = stats.get("total_return_pct", 0.0) or 0.0
-    return min(pf_v, 5.0) + ret / 100.0
+def _robust_score(fold_stats: list[dict]) -> tuple[float, int]:
+    """Aggregate OOS robustness across folds.
+
+    Rewards positive expectancy that is *consistent* across folds; gated by a
+    minimum number of pooled trades. Returns (score, pooled_trades).
+    """
+    pooled = sum(s.get("total_trades", 0) for s in fold_stats)
+    if pooled < MIN_TRADES_SEL:
+        return -1e9, pooled
+    exps = [s.get("expectancy_pct", 0.0) or 0.0 for s in fold_stats if s.get("total_trades")]
+    if not exps:
+        return -1e9, pooled
+    mean_exp = sum(exps) / len(exps)
+    # consistency: fraction of folds with positive expectancy
+    pos_frac = sum(1 for e in exps if e > 0) / len(exps)
+    # penalize dispersion
+    var = sum((e - mean_exp) ** 2 for e in exps) / len(exps)
+    spread = var ** 0.5
+    # frequency credit: prefer configs that trade often enough to be validated
+    # (avoids degenerate "one great trade" configs that can't generalise)
+    freq = min(1.0, pooled / FREQ_TARGET)
+    score = (mean_exp * pos_frac - 0.25 * spread) * freq
+    return score, pooled
 
 
-def _optimize_range(C: dict, lo: int, hi: int) -> tuple[dict, dict, float]:
-    """Return (best_params_dict, best_stats, best_score) over [lo, hi)."""
-    best_params, best_stats, best_score = None, {"total_trades": 0}, -1e18
-    for combo in _combos():
-        p = BacktestParams(**combo)
-        trades = simulate(C, p, lo, hi)
-        stats, _ = _compute_stats(trades)
-        sc = _score(stats)
-        if sc > best_score:
-            best_params, best_stats, best_score = combo, stats, sc
-    if best_params is None:                        # nothing met MIN_TRADES
-        best_params = {k: PARAM_GRID[k][0] for k in PARAM_GRID}
-    return best_params, best_stats, best_score
+def _stats_of(C, params: BacktestParams, lo: int, hi: int) -> dict:
+    return _compute_stats(simulate(C, params, lo, hi))[0]
 
 
 def optimize(candles: list[Candle], folds: int = 4) -> dict:
@@ -68,82 +77,89 @@ def optimize(candles: list[Candle], folds: int = 4) -> dict:
     n = len(df)
     symbol = candles[0].symbol if candles else "?"
     timeframe = candles[0].timeframe if candles else "?"
-    if n < WARMUP + 200:
+    if n < WARMUP + 250:
         return {"symbol": symbol, "timeframe": timeframe, "bars": n,
                 "error": "ข้อมูลไม่พอสำหรับ optimize (ต้องการประวัติยาวกว่านี้)"}
 
     C = prepare(df)
     start = WARMUP
+    usable = n - start
 
-    # ── default (baseline) over usable range ──
-    default_stats, _ = _compute_stats(simulate(C, BacktestParams(), start, n))
+    # holdout = last ~30% (never used for selection); selection = first ~70%
+    hold_lo = start + int(usable * 0.70)
+    hold_hi = n
+    sel_len = hold_lo - start
+    seg = sel_len // folds
+    sel_bounds = [(start + seg * k, start + seg * (k + 1) if k < folds - 1 else hold_lo)
+                  for k in range(folds)]
 
-    # ── suggested params: optimize over all usable history (in-sample) ──
-    suggested, in_sample_stats, _ = _optimize_range(C, start, n)
+    # ── select the config by aggregate OOS robustness across selection folds ──
+    best = None  # (cand, score, pooled, sel_fold_stats)
+    for cand in _candidates():
+        p = BacktestParams(**cand)
+        fold_stats = [_stats_of(C, p, lo, hi) for lo, hi in sel_bounds]
+        score, pooled = _robust_score(fold_stats)
+        if best is None or score > best[1]:
+            best = (cand, score, pooled, fold_stats)
 
-    # ── walk-forward: anchored train grows, test on the next segment ──
-    seg = (n - start) // (folds + 1)
-    oos_trades = []
-    fold_reports = []
-    for k in range(1, folds + 1):
-        train_hi = start + seg * k
-        test_lo = train_hi
-        test_hi = start + seg * (k + 1) if k < folds else n
-        if test_hi - test_lo < 10:
-            continue
-        fp, _, _ = _optimize_range(C, start, train_hi)      # optimize on train only
-        t = simulate(C, BacktestParams(**fp), test_lo, test_hi)  # evaluate OOS
-        fstats, _ = _compute_stats(t)
-        oos_trades.extend(t)
-        fold_reports.append({
-            "fold": k,
-            "train_bars": train_hi - start,
-            "test_bars": test_hi - test_lo,
-            "params": fp,
-            "test": {kk: fstats.get(kk) for kk in
-                     ("total_trades", "win_rate", "profit_factor", "total_return_pct")},
-        })
+    # default for comparison (on holdout)
+    default_hold = _stats_of(C, BacktestParams(), hold_lo, hold_hi)
 
-    oos_stats, oos_curve = _compute_stats(oos_trades)
+    if best is None or best[1] <= -1e8:
+        return {
+            "symbol": symbol, "timeframe": timeframe, "bars": n,
+            "suggested": None,
+            "default_holdout": default_hold,
+            "verdict": "🔴 ไม่มี config ใดมีดีลพอ/มี edge — แนะนำไม่เทรด symbol นี้",
+            "human_gate": "คำแนะนำเท่านั้น — ไม่เปลี่ยนกลยุทธ์/ไม่เทรดให้",
+        }
 
-    # ── verdict (honest, OOS-based) ──
-    verdict = _verdict(default_stats, in_sample_stats, oos_stats)
+    cand, score, pooled, sel_fold_stats = best
+    best_params = BacktestParams(**cand)
+
+    # ── verdict on the untouched holdout ──
+    hold_stats = _stats_of(C, best_params, hold_lo, hold_hi)
+    verdict = _verdict(hold_stats, default_hold, pooled)
 
     return {
         "symbol": symbol,
         "timeframe": timeframe,
         "bars": n,
-        "default": {"params": "default", "stats": default_stats},
-        "suggested": {"params": suggested, "in_sample_stats": in_sample_stats},
-        "walk_forward": {
-            "folds": fold_reports,
-            "oos_stats": oos_stats,
-            "oos_equity": oos_curve,
+        "suggested": {
+            "strategy": cand["strategy"],
+            "params": cand,
+            "selection": {
+                "pooled_trades": pooled,
+                "robust_score": round(score, 4),
+                "folds": [{kk: s.get(kk) for kk in
+                           ("total_trades", "win_rate", "profit_factor", "expectancy_pct")}
+                          for s in sel_fold_stats],
+            },
         },
+        "holdout": hold_stats,
+        "default_holdout": default_hold,
         "verdict": verdict,
-        "human_gate": "นี่เป็นเพียงคำแนะนำ — ระบบยังไม่เปลี่ยนกลยุทธ์/ไม่เทรดให้ ต้องคนกดอนุมัติ",
+        "human_gate": "คำแนะนำเท่านั้น — กด Apply เพื่อผูกกับ symbol (คนอนุมัติ) ระบบไม่เทรดเอง",
     }
 
 
-def _verdict(default: dict, in_sample: dict, oos: dict) -> str:
-    oos_pf = oos.get("profit_factor")
-    is_pf = in_sample.get("profit_factor")
+def _verdict(hold: dict, default: dict, pooled: int) -> str:
+    n = hold.get("total_trades", 0)
+    if n < MIN_TRADES_HOLD:
+        return f"⚠️ ดีลบน holdout น้อย ({n}) — ยังเชื่อไม่ได้ ต้องการประวัติมากขึ้น"
+    pf = hold.get("profit_factor")
+    ret = hold.get("total_return_pct", 0.0)
     def_pf = default.get("profit_factor")
-    oos_n = oos.get("total_trades", 0)
-
-    if oos_n < MIN_TRADES:
-        return "⚠️ ดีล OOS น้อยเกินไป — ยังสรุปไม่ได้ ต้องการประวัติมากขึ้น"
     parts = []
-    if oos_pf is not None and def_pf is not None:
-        if oos_pf > def_pf + 0.1:
-            parts.append(f"✅ OOS ดีกว่า default (PF {oos_pf} vs {def_pf})")
-        elif oos_pf < def_pf - 0.1:
-            parts.append(f"🔴 OOS แย่กว่า default (PF {oos_pf} vs {def_pf}) — อย่าใช้")
-        else:
-            parts.append(f"🟡 OOS ใกล้เคียง default (PF {oos_pf} vs {def_pf})")
-    # overfit check: in-sample much better than OOS
-    if is_pf is not None and oos_pf is not None and is_pf > oos_pf + 0.5:
-        parts.append(f"⚠️ in-sample ({is_pf}) ดีกว่า OOS ({oos_pf}) มาก — ระวัง overfit")
-    if oos_pf is not None and oos_pf >= 1.5:
-        parts.append("OOS PF ≥ 1.5 = มี edge จริงพอควร")
-    return " · ".join(parts) or "ไม่มีข้อสรุปชัดเจน"
+    if pf is None:
+        parts.append("holdout ไม่มีดีลขาดทุน (sample เล็ก)")
+    elif pf >= 1.3 and ret > 0:
+        parts.append(f"✅ holdout มี edge (PF {pf}, ret {ret}%)")
+    elif pf >= 1.0:
+        parts.append(f"🟡 holdout ก้ำกึ่ง (PF {pf}, ret {ret}%) — ยังไม่ชัด")
+    else:
+        parts.append(f"🔴 holdout ไม่มี edge (PF {pf}, ret {ret}%) — แนะนำไม่เทรด")
+    if def_pf is not None and pf is not None:
+        better = "ดีกว่า" if pf > def_pf else "ไม่ดีกว่า"
+        parts.append(f"({better} default PF {def_pf})")
+    return " ".join(parts)

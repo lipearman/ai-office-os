@@ -12,7 +12,7 @@ interface WatchItem {
   id: string;
   symbol: string;
   enabled: boolean;
-  strategies: string[];
+  strategies: any[];
 }
 
 interface ScanResult {
@@ -171,6 +171,28 @@ export default function TradingPage() {
     }
   };
 
+  const applyStrategy = async () => {
+    if (!optResult?.suggested) return;
+    const item = watchlist.find((w) => w.symbol === optResult.symbol);
+    if (!item) {
+      setError(`${optResult.symbol} ไม่ได้อยู่ใน watchlist — เพิ่มก่อนจึงจะ Apply ได้`);
+      return;
+    }
+    const config = {
+      strategy: optResult.suggested.strategy,
+      params: optResult.suggested.params,
+      timeframe: optResult.timeframe,
+      holdout: optResult.holdout,
+      applied_at: new Date().toISOString(),
+    };
+    try {
+      await api.patch(`/trading/watchlist/${item.id}`, { strategies: [config] });
+      loadWatchlist();
+    } catch (e: any) {
+      setError(e?.response?.data?.detail ?? "Apply ไม่สำเร็จ");
+    }
+  };
+
   const runML = async () => {
     if (!btSymbol.trim()) return;
     setMlLoading(true);
@@ -268,14 +290,23 @@ export default function TradingPage() {
       {/* watchlist chips */}
       {watchlist.length > 0 && (
         <div className="mb-5 flex flex-wrap gap-2">
-          {watchlist.map((w) => (
-            <span key={w.id} className="flex items-center gap-1.5 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-white/70">
-              {w.symbol}
-              <button onClick={() => removeSymbol(w.id)} className="text-white/30 hover:text-red-400">
-                <X size={12} />
-              </button>
-            </span>
-          ))}
+          {watchlist.map((w) => {
+            const cfg = w.strategies?.[0];
+            const stratLabel = cfg?.strategy === "rsi_reversion" ? "reversion" : cfg?.strategy === "ema_pullback" ? "pullback" : null;
+            return (
+              <span key={w.id} className="flex items-center gap-1.5 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-white/70">
+                {w.symbol}
+                {stratLabel && (
+                  <span className="rounded bg-accent-500/20 px-1.5 text-[9px] font-semibold text-accent-300" title={`กลยุทธ์ที่ผูกไว้: ${cfg.strategy} (${cfg.timeframe})`}>
+                    {stratLabel}
+                  </span>
+                )}
+                <button onClick={() => removeSymbol(w.id)} className="text-white/30 hover:text-red-400">
+                  <X size={12} />
+                </button>
+              </span>
+            );
+          })}
         </div>
       )}
 
@@ -564,48 +595,63 @@ export default function TradingPage() {
               ค้นหาพารามิเตอร์ที่ดีสุด ({btSymbol} {btTf}) แล้วพิสูจน์ด้วย out-of-sample
             </p>
           )}
-          {optLoading && <p className="px-4 py-6 text-center text-xs text-white/40">กำลัง search + walk-forward…</p>}
-          {optResult && !optResult.error && (
+          {optLoading && <p className="px-4 py-6 text-center text-xs text-white/40">กำลังลองหลายกลยุทธ์ + walk-forward…</p>}
+          {optResult && !optResult.error && optResult.suggested && (
             <div className="space-y-3 p-4">
+              {/* chosen strategy + params */}
               <div className="rounded-lg border border-white/10 bg-black/20 p-3 text-[11px]">
-                <p className="mb-1 text-white/40">พารามิเตอร์ที่แนะนำ</p>
+                <div className="mb-1.5 flex items-center gap-2">
+                  <span className="text-white/40">กลยุทธ์ที่เหมาะกับ {optResult.symbol}:</span>
+                  <span className="rounded bg-accent-500/20 px-2 py-0.5 font-bold text-accent-300">
+                    {optResult.suggested.strategy === "rsi_reversion" ? "RSI Reversion (range)" : "EMA Pullback (trend)"}
+                  </span>
+                </div>
                 <div className="flex flex-wrap gap-1.5">
-                  {Object.entries(optResult.suggested.params).map(([k, v]: any) => (
+                  {Object.entries(optResult.suggested.params).filter(([k]) => k !== "strategy").map(([k, v]: any) => (
                     <span key={k} className="rounded bg-white/5 px-2 py-0.5 text-white/70">
                       {k}: <span className="font-semibold text-accent-400">{String(v)}</span>
                     </span>
                   ))}
                 </div>
               </div>
-              {/* in-sample vs OOS */}
+              {/* holdout (untouched) vs default */}
               <div className="rounded-lg border border-white/10 bg-black/20 p-3 text-[11px]">
                 <div className="mb-1 flex font-semibold text-white/50">
-                  <span className="flex-1">PF</span>
-                  <span className="w-20 text-right">In-Sample</span>
-                  <span className="w-20 text-right text-accent-400">OOS (จริง)</span>
+                  <span className="flex-1">Holdout (ไม่เคยเห็น)</span>
+                  <span className="w-16 text-right">Default</span>
+                  <span className="w-16 text-right text-accent-400">เลือก</span>
                 </div>
-                <div className="flex text-white/70">
-                  <span className="flex-1">Profit Factor</span>
-                  <span className="w-20 text-right text-white/50">{optResult.suggested.in_sample_stats?.profit_factor ?? "—"}</span>
-                  <span className="w-20 text-right font-semibold text-white">{optResult.walk_forward.oos_stats?.profit_factor ?? "—"}</span>
-                </div>
-                <div className="flex text-white/70">
-                  <span className="flex-1">ผลตอบแทน</span>
-                  <span className="w-20 text-right text-white/50">{optResult.suggested.in_sample_stats?.total_return_pct ?? "—"}%</span>
-                  <span className="w-20 text-right font-semibold text-white">{optResult.walk_forward.oos_stats?.total_return_pct ?? "—"}%</span>
-                </div>
-                <div className="flex text-white/70">
-                  <span className="flex-1">เทรด (OOS)</span>
-                  <span className="w-20 text-right text-white/50">—</span>
-                  <span className="w-20 text-right font-semibold text-white">{optResult.walk_forward.oos_stats?.total_trades ?? 0}</span>
-                </div>
+                {[
+                  ["Profit Factor", "profit_factor", ""],
+                  ["ผลตอบแทน", "total_return_pct", "%"],
+                  ["Win Rate", "win_rate", "%"],
+                  ["เทรด", "total_trades", ""],
+                ].map(([label, key, unit]) => (
+                  <div key={key} className="flex text-white/70">
+                    <span className="flex-1">{label}</span>
+                    <span className="w-16 text-right text-white/40">{optResult.default_holdout?.[key] ?? "—"}{unit}</span>
+                    <span className="w-16 text-right font-semibold text-white">{optResult.holdout?.[key] ?? "—"}{unit}</span>
+                  </div>
+                ))}
               </div>
               <div className="rounded-lg border border-white/10 bg-black/20 px-3 py-2 text-[11px] text-white/60">
                 {optResult.verdict}
               </div>
+              <button
+                onClick={applyStrategy}
+                className="w-full rounded-lg bg-accent-500 py-2 text-xs font-semibold text-black transition hover:bg-accent-400"
+              >
+                ✓ Apply กลยุทธ์นี้ให้ {optResult.symbol}
+              </button>
               <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[10px] text-amber-300/80">
                 🔒 {optResult.human_gate}
               </div>
+            </div>
+          )}
+          {optResult && !optResult.error && !optResult.suggested && (
+            <div className="space-y-2 p-4">
+              <div className="rounded-lg border border-white/10 bg-black/20 px-3 py-2 text-[11px] text-white/60">{optResult.verdict}</div>
+              <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[10px] text-amber-300/80">🔒 {optResult.human_gate}</div>
             </div>
           )}
           {optResult?.error && <p className="px-4 py-6 text-center text-xs text-white/40">{optResult.error}</p>}
