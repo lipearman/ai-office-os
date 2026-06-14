@@ -68,6 +68,11 @@ export default function TradingPage() {
   const [mlResult, setMlResult]   = useState<any>(null);
   const [mlLoading, setMlLoading] = useState(false);
 
+  // ── today's opportunities ──
+  const [opps, setOpps]           = useState<any[]>([]);
+  const [oppsLoading, setOppsLoading] = useState(false);
+  const [oppsRun, setOppsRun]     = useState(false);
+
   // ── load watchlist + symbol list ──
   const loadWatchlist = () => {
     if (!current) return;
@@ -152,6 +157,20 @@ export default function TradingPage() {
       setError(e?.response?.data?.detail ?? "backtest ไม่สำเร็จ");
     } finally {
       setBtLoading(false);
+    }
+  };
+
+  const loadOpportunities = async () => {
+    if (!current) return;
+    setOppsLoading(true);
+    setOppsRun(true);
+    try {
+      const r = await api.get(`/trading/opportunities/workspace/${current.id}`);
+      setOpps(r.data.results);
+    } catch (e: any) {
+      setError(e?.response?.data?.detail ?? "ประเมินโอกาสไม่สำเร็จ");
+    } finally {
+      setOppsLoading(false);
     }
   };
 
@@ -261,6 +280,71 @@ export default function TradingPage() {
             </div>
           );
         })}
+      </div>
+
+      {/* ── Today's Opportunities ── */}
+      <div className="mb-5 rounded-xl border border-white/10 bg-[#141228]/70 backdrop-blur-md">
+        <div className="flex items-center gap-2 border-b border-white/10 px-4 py-3">
+          <span className="text-sm font-semibold text-white/70">⭐ โอกาสวันนี้</span>
+          <span className="text-[10px] text-white/30">สัญญาณวันนี้ × สถิติชนะอดีต</span>
+          <div className="flex-1" />
+          <button onClick={loadOpportunities} disabled={oppsLoading || !current}
+            className="flex items-center gap-1.5 rounded-lg bg-primary-500 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-primary-600 disabled:opacity-50">
+            <RefreshCw size={13} className={oppsLoading ? "animate-spin" : ""} />
+            {oppsLoading ? "กำลังประเมิน…" : "ประเมินโอกาสวันนี้"}
+          </button>
+        </div>
+        {!oppsRun && !oppsLoading && (
+          <p className="px-4 py-6 text-center text-xs text-white/30">
+            กดเพื่อประเมินว่าวันนี้เหรียญใน watchlist เหรียญไหนมีโอกาสชนะ (ใช้กลยุทธ์ที่ผูกไว้ต่อ symbol)
+          </p>
+        )}
+        {oppsLoading && <p className="px-4 py-6 text-center text-xs text-white/40">กำลังประเมินทุกเหรียญ…</p>}
+        {oppsRun && !oppsLoading && opps.length > 0 && (
+          <div className="divide-y divide-white/5">
+            {opps.map((o) => (
+              <div key={o.symbol} className="flex items-center gap-3 px-4 py-2.5">
+                {/* rank score donut-ish */}
+                <div className="flex w-14 shrink-0 flex-col items-center">
+                  <span className="text-lg font-bold" style={{
+                    color: o.signal_today ? (o.win_chance_pct >= 55 ? "#4ade80" : o.win_chance_pct >= 45 ? "#f59e0b" : "#f87171") : "#64748b",
+                  }}>
+                    {o.win_chance_pct != null ? `${o.win_chance_pct}%` : "—"}
+                  </span>
+                  <span className="text-[8px] text-white/30">win chance</span>
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="font-semibold text-white">{o.symbol}</span>
+                    <span className="rounded bg-white/5 px-1.5 py-px text-[9px] text-white/50">
+                      {o.strategy === "rsi_reversion" ? "reversion" : "pullback"} · {o.timeframe}
+                    </span>
+                    <span className="text-xs">{o.label}</span>
+                  </div>
+                  <p className="truncate text-[10px] text-white/35">{o.reasons?.[0]}{o.reasons?.[1] ? ` · ${o.reasons[1]}` : ""}</p>
+                </div>
+                {/* plan when signal today */}
+                {o.plan && (
+                  <div className="hidden shrink-0 gap-2 text-right text-[10px] sm:flex">
+                    {[["entry", "#22d3ee"], ["stop", "#f87171"], ["target", "#4ade80"]].map(([k, c]) => (
+                      <div key={k}>
+                        <p className="text-[8px] uppercase text-white/30">{k}</p>
+                        <p className="font-semibold" style={{ color: c as string }}>{o.plan[k]?.toLocaleString?.() ?? o.plan[k]}</p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <span className="w-12 shrink-0 text-right text-[10px] text-white/30" title="opportunity score">
+                  {o.opportunity_score}
+                </span>
+              </div>
+            ))}
+            <p className="px-4 py-2 text-[10px] text-amber-300/60">🔒 {opps[0]?.disclaimer}</p>
+          </div>
+        )}
+        {oppsRun && !oppsLoading && opps.length === 0 && (
+          <p className="px-4 py-6 text-center text-xs text-white/30">ยังไม่มีเหรียญใน watchlist</p>
+        )}
       </div>
 
       {/* watchlist add bar */}

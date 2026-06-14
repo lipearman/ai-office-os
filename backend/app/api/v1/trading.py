@@ -13,6 +13,7 @@ from app.api.deps import get_current_user
 from app.trading.bitkub import BitkubClient, to_tradingview_symbol, TIMEFRAMES
 from app.trading.service import (
     analyze_with_brief, scan_symbols, backtest_symbol, optimize_symbol, ml_symbol,
+    daily_opportunity, daily_opportunities,
 )
 
 router = APIRouter(prefix="/trading", tags=["trading"])
@@ -210,4 +211,44 @@ async def scan_watchlist(
     results = await scan_symbols(symbols)
     for r in results:
         r["assigned_strategy"] = assigned.get(r["symbol"])
+    return {"results": results, "count": len(results)}
+
+
+# ── today's opportunities ───────────────────────────────────────
+@router.get("/opportunity/{symbol}")
+async def opportunity(
+    symbol: str,
+    timeframe: str = "1H",
+    current_user: User = Depends(get_current_user),
+):
+    """ประเมินโอกาสชนะวันนี้ของ symbol (default strategy)."""
+    if timeframe not in TIMEFRAMES:
+        raise HTTPException(status_code=400, detail=f"timeframe must be one of {list(TIMEFRAMES)}")
+    client = BitkubClient()
+    result = await daily_opportunity(client, symbol, cfg=None, default_tf=timeframe)
+    if not result:
+        raise HTTPException(status_code=404, detail=f"No data for {symbol}")
+    return result
+
+
+@router.get("/opportunities/workspace/{workspace_id}")
+async def opportunities(
+    workspace_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """หาเหรียญที่มีโอกาสชนะวันนี้ — ใช้กลยุทธ์ที่ผูกไว้ต่อ symbol แล้วจัดอันดับ."""
+    result = await db.execute(
+        select(WatchlistItem).where(
+            WatchlistItem.workspace_id == workspace_id,
+            WatchlistItem.enabled == True,  # noqa: E712
+        )
+    )
+    items = [
+        {"symbol": w.symbol, "cfg": (w.strategies[0] if w.strategies else None)}
+        for w in result.scalars().all()
+    ]
+    if not items:
+        return {"results": [], "count": 0}
+    results = await daily_opportunities(items)
     return {"results": results, "count": len(results)}
