@@ -1,11 +1,12 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+// Daily Trading Intelligence — scanner, opportunities, backtest/optimizer/ML, paper trading
+import { useEffect, useMemo, useState, useRef } from "react";
 import api from "@/lib/api";
 import { useWorkspaceStore } from "@/store/workspace";
 import {
   TrendingUp, RefreshCw, Plus, X, Search, AlertTriangle,
-  ArrowUpRight, ArrowDownRight, Minus as MinusIcon,
+  ArrowUpRight, ArrowDownRight, Minus as MinusIcon, Bell, BellOff,
 } from "lucide-react";
 
 interface WatchItem {
@@ -73,6 +74,18 @@ export default function TradingPage() {
   const [oppsLoading, setOppsLoading] = useState(false);
   const [oppsRun, setOppsRun]     = useState(false);
 
+  // ── paper trading ──
+  const [paperStats, setPaperStats]   = useState<any>(null);
+  const [paperPos, setPaperPos]       = useState<any[]>([]);
+  const [paperTrades, setPaperTrades] = useState<any[]>([]);
+  const [paperBusy, setPaperBusy]     = useState(false);
+
+  // ── auto-alerts (loop เช็ครอบ) ──
+  const [alertsOn, setAlertsOn]   = useState(false);
+  const [alertMsgs, setAlertMsgs] = useState<{ id: number; text: string }[]>([]);
+  const prevSignals = useRef<Set<string>>(new Set());
+  const alertCheckedOnce = useRef(false);
+
   // ── load watchlist + symbol list ──
   const loadWatchlist = () => {
     if (!current) return;
@@ -104,6 +117,7 @@ export default function TradingPage() {
       const r = await api.get(`/trading/scan/workspace/${current.id}`);
       setResults(r.data.results);
       setLastScan(new Date());
+      loadOpportunities();   // win-chance per symbol, shown inline in the table
     } catch (e: any) {
       setError("สแกนไม่สำเร็จ — ตรวจสอบว่า backend ทำงานอยู่");
     } finally {
@@ -165,6 +179,54 @@ export default function TradingPage() {
       setError(e?.response?.data?.detail ?? "backtest ไม่สำเร็จ");
     } finally {
       setBtLoading(false);
+    }
+  };
+
+  const loadPaper = async () => {
+    if (!current) return;
+    try {
+      const [s, p, t] = await Promise.all([
+        api.get(`/trading/paper/stats/workspace/${current.id}`),
+        api.get(`/trading/paper/positions/workspace/${current.id}`),
+        api.get(`/trading/paper/trades/workspace/${current.id}`),
+      ]);
+      setPaperStats(s.data);
+      setPaperPos(p.data.positions);
+      setPaperTrades(t.data.trades);
+    } catch { /* ignore */ }
+  };
+  useEffect(() => { loadPaper(); /* eslint-disable-next-line */ }, [current]);
+
+  const openPaper = async (o: any) => {
+    if (!current) return;
+    setPaperBusy(true);
+    try {
+      await api.post(`/trading/paper/open/workspace/${current.id}`, {
+        symbol: o.symbol,
+        size_thb: 10000,
+        timeframe: o.timeframe ?? "1H",
+        strategy: o.strategy ?? "manual",
+        stop: o.plan?.stop ?? null,
+        target: o.plan?.target ?? null,
+        rationale: o.reasons?.[0] ?? o.label ?? "manual",
+      });
+      await loadPaper();
+    } catch (e: any) {
+      setError(e?.response?.data?.detail ?? "เปิด paper ไม่สำเร็จ");
+    } finally {
+      setPaperBusy(false);
+    }
+  };
+
+  const closePaper = async (id: string) => {
+    setPaperBusy(true);
+    try {
+      await api.post(`/trading/paper/close/${id}`);
+      await loadPaper();
+    } catch (e: any) {
+      setError(e?.response?.data?.detail ?? "ปิด paper ไม่สำเร็จ");
+    } finally {
+      setPaperBusy(false);
     }
   };
 
@@ -236,11 +298,49 @@ export default function TradingPage() {
     }
   };
 
+  const oppBySym = useMemo(
+    () => Object.fromEntries(opps.map((o) => [o.symbol, o])),
+    [opps]
+  );
+
   const counts = useMemo(() => {
     const c = { BUY: 0, SELL: 0, HOLD: 0 };
     results.forEach((r) => { c[r.signal] = (c[r.signal] ?? 0) + 1; });
     return c;
   }, [results]);
+
+  // detect symbols that NEWLY entered a setup → raise alert
+  useEffect(() => {
+    if (opps.length === 0) return;
+    const nowSig = new Set<string>(opps.filter((o) => o.signal_today).map((o) => o.symbol));
+    if (alertCheckedOnce.current) {
+      const fresh = [...nowSig].filter((s) => !prevSignals.current.has(s));
+      if (fresh.length) {
+        const msgs = fresh.map((s) => {
+          const o = opps.find((x) => x.symbol === s);
+          return { id: Date.now() + Math.random(), text: `${s} เข้า setup (${o?.strategy}) — win ~${o?.win_chance_pct ?? "?"}%` };
+        });
+        setAlertMsgs((prev) => [...msgs, ...prev].slice(0, 5));
+        if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+          fresh.forEach((s) => new Notification("⭐ โอกาสเทรดวันนี้", { body: `${s} เข้า setup แล้ว` }));
+        }
+      }
+    }
+    prevSignals.current = nowSig;
+    alertCheckedOnce.current = true;
+  }, [opps]);
+
+  // auto-alert loop: poll opportunities every 5 min while enabled
+  useEffect(() => {
+    if (!alertsOn || !current) return;
+    if (typeof Notification !== "undefined" && Notification.permission === "default") {
+      Notification.requestPermission();
+    }
+    loadOpportunities();
+    const t = setInterval(loadOpportunities, 5 * 60 * 1000);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [alertsOn, current]);
 
   return (
     <div className="animate-fade-in mx-auto w-full max-w-6xl">
@@ -296,12 +396,41 @@ export default function TradingPage() {
           <span className="text-sm font-semibold text-white/70">⭐ โอกาสวันนี้</span>
           <span className="text-[10px] text-white/30">สัญญาณวันนี้ × สถิติชนะอดีต</span>
           <div className="flex-1" />
+          <button
+            onClick={() => setAlertsOn((v) => !v)}
+            title={alertsOn ? "ปิดแจ้งเตือน (เช็คทุก 5 นาที)" : "เปิดแจ้งเตือนอัตโนมัติ (เช็คทุก 5 นาที)"}
+            className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
+              alertsOn ? "bg-green-500/20 text-green-300" : "border border-white/15 text-white/60 hover:bg-white/10"
+            }`}
+          >
+            {alertsOn ? <Bell size={13} /> : <BellOff size={13} />}
+            {alertsOn ? "แจ้งเตือน: เปิด" : "แจ้งเตือน"}
+          </button>
           <button onClick={loadOpportunities} disabled={oppsLoading || !current}
             className="flex items-center gap-1.5 rounded-lg bg-primary-500 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-primary-600 disabled:opacity-50">
             <RefreshCw size={13} className={oppsLoading ? "animate-spin" : ""} />
             {oppsLoading ? "กำลังประเมิน…" : "ประเมินโอกาสวันนี้"}
           </button>
         </div>
+
+        {/* alert banners */}
+        {alertMsgs.length > 0 && (
+          <div className="space-y-1 border-b border-white/10 px-4 py-2">
+            {alertMsgs.map((m) => (
+              <div key={m.id} className="flex items-center gap-2 rounded-lg border border-green-500/30 bg-green-500/10 px-3 py-1.5 text-[11px] text-green-200">
+                <Bell size={12} /> <span className="flex-1">{m.text}</span>
+                <button onClick={() => setAlertMsgs((p) => p.filter((x) => x.id !== m.id))} className="text-white/30 hover:text-white">
+                  <X size={11} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        {alertsOn && (
+          <div className="border-b border-white/10 px-4 py-1.5 text-[10px] text-white/30">
+            🔔 กำลังเฝ้าดูทุก 5 นาที — จะเตือนเมื่อมีเหรียญเข้า setup ใหม่
+          </div>
+        )}
         {!oppsRun && !oppsLoading && (
           <p className="px-4 py-6 text-center text-xs text-white/30">
             กดเพื่อประเมินว่าวันนี้เหรียญใน watchlist เหรียญไหนมีโอกาสชนะ (ใช้กลยุทธ์ที่ผูกไว้ต่อ symbol)
@@ -342,9 +471,17 @@ export default function TradingPage() {
                     ))}
                   </div>
                 )}
-                <span className="w-12 shrink-0 text-right text-[10px] text-white/30" title="opportunity score">
+                <span className="w-10 shrink-0 text-right text-[10px] text-white/30" title="opportunity score">
                   {o.opportunity_score}
                 </span>
+                <button
+                  onClick={() => openPaper(o)}
+                  disabled={paperBusy}
+                  title="เปิด paper trade ที่ราคาตลาด (จำลอง)"
+                  className="shrink-0 rounded-md border border-accent-500/40 px-2 py-1 text-[10px] font-semibold text-accent-300 transition hover:bg-accent-500/10 disabled:opacity-40"
+                >
+                  📝 เทรด
+                </button>
               </div>
             ))}
             <p className="px-4 py-2 text-[10px] text-amber-300/60">🔒 {opps[0]?.disclaimer}</p>
@@ -406,8 +543,9 @@ export default function TradingPage() {
         {/* scanner table */}
         <div className="lg:col-span-2">
           <div className="overflow-hidden rounded-xl border border-white/10 bg-[#141228]/70 backdrop-blur-md">
-            <div className="border-b border-white/10 px-4 py-3 text-sm font-semibold text-white/70">
-              Signal Scanner
+            <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
+              <span className="text-sm font-semibold text-white/70">Signal Scanner</span>
+              <span className="text-[10px] text-white/30">signal · win% วันนี้ · ราคา</span>
             </div>
             {results.length === 0 && !scanning && (
               <div className="px-4 py-10 text-center text-sm text-white/30">
@@ -441,6 +579,21 @@ export default function TradingPage() {
                     </div>
                     <span className="mt-0.5 block truncate text-[10px] text-white/35">{r.reason}</span>
                   </div>
+                  {/* win chance today */}
+                  {(() => {
+                    const o = oppBySym[r.symbol];
+                    const wc = o?.win_chance_pct;
+                    const color = o?.signal_today
+                      ? (wc >= 55 ? "#4ade80" : wc >= 45 ? "#f59e0b" : "#f87171")
+                      : "#475569";
+                    return (
+                      <span className="w-14 shrink-0 text-right" title={o ? o.label : "กดสแกน/ประเมินเพื่อดูโอกาสวันนี้"}>
+                        <span className="text-xs font-bold" style={{ color }}>
+                          {o?.signal_today && wc != null ? `${wc}%` : (o ? "—" : "·")}
+                        </span>
+                      </span>
+                    );
+                  })()}
                   {/* price */}
                   <span className="w-24 shrink-0 text-right text-sm text-white/70">{fmtPrice(r.price)}</span>
                   {/* warnings */}
@@ -840,6 +993,80 @@ export default function TradingPage() {
           )}
           {mlResult?.error && <p className="px-4 py-6 text-center text-xs text-white/40">{mlResult.error}</p>}
         </div>
+      </div>
+
+      {/* ── Paper Trading ── */}
+      <div className="mt-6 rounded-xl border border-white/10 bg-[#141228]/70 backdrop-blur-md">
+        <div className="flex items-center gap-2 border-b border-white/10 px-4 py-3">
+          <span className="text-sm font-semibold text-white/70">📝 Paper Trading</span>
+          <span className="text-[10px] text-white/30">จำลอง — fee 0.25%, สะสมสถิติจริง</span>
+          <div className="flex-1" />
+          <button onClick={loadPaper}
+            className="flex items-center gap-1.5 rounded-lg border border-white/15 px-3 py-1.5 text-xs text-white/60 transition hover:bg-white/10">
+            <RefreshCw size={13} /> รีเฟรช
+          </button>
+        </div>
+
+        {/* accumulated stats */}
+        {paperStats && (
+          <div className="grid grid-cols-2 gap-3 p-4 sm:grid-cols-4">
+            {[
+              { k: "เทรดทั้งหมด", v: paperStats.total_trades ?? 0, c: "#a78bfa" },
+              { k: "Win Rate", v: paperStats.total_trades ? `${paperStats.win_rate}%` : "—", c: "#4ade80" },
+              { k: "Profit Factor", v: paperStats.profit_factor ?? "—", c: (paperStats.profit_factor ?? 0) >= 1.5 ? "#4ade80" : "#f59e0b" },
+              { k: "กำไรรวม (฿)", v: (paperStats.total_pnl_thb ?? 0).toLocaleString(), c: (paperStats.total_pnl_thb ?? 0) >= 0 ? "#4ade80" : "#f87171" },
+            ].map(({ k, v, c }) => (
+              <div key={k} className="rounded-lg border border-white/10 bg-white/5 px-3 py-2">
+                <p className="text-[10px] text-white/40">{k}</p>
+                <p className="text-lg font-bold" style={{ color: c }}>{v}</p>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* open positions */}
+        <div className="px-4 pb-2">
+          <p className="mb-1.5 text-[11px] font-semibold text-white/50">Open Positions ({paperPos.length})</p>
+          {paperPos.length === 0 && (
+            <p className="py-3 text-center text-[11px] text-white/30">ยังไม่มี position — กด “📝 เทรด” ที่ ⭐ โอกาสวันนี้</p>
+          )}
+          {paperPos.map((t) => (
+            <div key={t.id} className="flex items-center gap-3 border-b border-white/5 py-2 text-[11px]">
+              <span className="w-24 shrink-0 font-semibold text-white">{t.symbol}</span>
+              <span className="w-16 shrink-0 text-white/40">{t.size_thb?.toLocaleString()}฿</span>
+              <span className="hidden w-28 shrink-0 text-white/40 sm:block">
+                เข้า {t.entry_price?.toLocaleString()} → {t.live?.cur_price?.toLocaleString() ?? "—"}
+              </span>
+              <span className={`flex-1 text-right font-semibold ${(t.live?.pnl_thb ?? 0) >= 0 ? "text-green-400" : "text-red-400"}`}>
+                {t.live ? `${t.live.pnl_thb >= 0 ? "+" : ""}${t.live.pnl_thb.toLocaleString()}฿ (${t.live.pnl_pct}%)` : "—"}
+              </span>
+              <button onClick={() => closePaper(t.id)} disabled={paperBusy}
+                className="shrink-0 rounded-md border border-red-500/40 px-2 py-1 text-[10px] font-semibold text-red-300 transition hover:bg-red-500/10 disabled:opacity-40">
+                ปิด
+              </button>
+            </div>
+          ))}
+        </div>
+
+        {/* closed journal */}
+        {paperTrades.length > 0 && (
+          <div className="px-4 pb-4">
+            <p className="mb-1.5 mt-2 text-[11px] font-semibold text-white/50">Journal — ปิดแล้ว ({paperTrades.length})</p>
+            <div className="max-h-56 overflow-y-auto rounded-lg border border-white/10">
+              {paperTrades.map((t) => (
+                <div key={t.id} className="flex items-center gap-2 border-b border-white/5 px-3 py-1.5 text-[11px]">
+                  <span className={`w-12 shrink-0 font-bold ${t.result === "WIN" ? "text-green-400" : "text-red-400"}`}>{t.result}</span>
+                  <span className="w-24 shrink-0 text-white">{t.symbol}</span>
+                  <span className="hidden w-28 shrink-0 text-white/40 sm:block">{t.exit_at?.slice(0, 16)}</span>
+                  <span className={`flex-1 text-right font-semibold ${(t.pnl_thb ?? 0) >= 0 ? "text-green-400" : "text-red-400"}`}>
+                    {t.pnl_thb >= 0 ? "+" : ""}{t.pnl_thb?.toLocaleString()}฿ ({t.pnl_pct}%)
+                  </span>
+                  <span className="hidden w-32 shrink-0 truncate text-white/30 md:block" title={t.rationale}>{t.rationale}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

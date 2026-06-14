@@ -6,9 +6,12 @@ from sqlalchemy import select
 from app.core.database import get_db
 from app.models.user import User
 from app.models.watchlist import WatchlistItem
+from app.models.paper import PaperTrade
 from app.schemas.trading import (
-    WatchlistItemOut, WatchlistItemCreate, WatchlistItemUpdate,
+    WatchlistItemOut, WatchlistItemCreate, WatchlistItemUpdate, PaperOpen,
 )
+from app.trading.paper import fill_open, close_pnl, unrealized, paper_stats
+from datetime import datetime, timezone
 from app.api.deps import get_current_user
 from app.trading.bitkub import BitkubClient, to_tradingview_symbol, TIMEFRAMES
 from app.trading.service import (
@@ -252,3 +255,127 @@ async def opportunities(
         return {"results": [], "count": 0}
     results = await daily_opportunities(items)
     return {"results": results, "count": len(results)}
+
+
+# ── paper trading ───────────────────────────────────────────────
+def _trade_out(t: PaperTrade) -> dict:
+    return {
+        "id": str(t.id), "symbol": t.symbol, "strategy": t.strategy,
+        "timeframe": t.timeframe, "side": t.side, "status": t.status,
+        "entry_at": t.entry_at.isoformat() if t.entry_at else None,
+        "entry_price": t.entry_price, "size_thb": t.size_thb, "qty": t.qty,
+        "stop": t.stop, "target": t.target,
+        "exit_at": t.exit_at.isoformat() if t.exit_at else None,
+        "exit_price": t.exit_price, "exit_reason": t.exit_reason,
+        "pnl_thb": t.pnl_thb, "pnl_pct": t.pnl_pct, "result": t.result,
+        "rationale": t.rationale,
+    }
+
+
+@router.post("/paper/open/workspace/{workspace_id}", status_code=201)
+async def paper_open(
+    workspace_id: uuid.UUID,
+    data: PaperOpen,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """เปิด paper position ที่ราคาตลาดปัจจุบัน (หัก fee 0.25%)."""
+    symbol = to_tradingview_symbol(data.symbol)
+    client = BitkubClient()
+    price = await client.last_price(symbol)
+    if not price:
+        raise HTTPException(status_code=404, detail=f"ดึงราคา {symbol} ไม่ได้")
+    fill = fill_open(price, data.size_thb)
+    t = PaperTrade(
+        workspace_id=workspace_id, symbol=symbol, strategy=data.strategy,
+        timeframe=data.timeframe, side="BUY", entry_price=price,
+        size_thb=data.size_thb, qty=fill["qty"], stop=data.stop, target=data.target,
+        fee_pct=fill["fee_pct"], status="OPEN",
+        rationale=data.rationale, indicators=data.indicators or {},
+    )
+    db.add(t)
+    await db.flush()
+    return _trade_out(t)
+
+
+@router.post("/paper/close/{trade_id}")
+async def paper_close(
+    trade_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """ปิด paper position ที่ราคาตลาดปัจจุบัน."""
+    res = await db.execute(select(PaperTrade).where(PaperTrade.id == trade_id))
+    t = res.scalar_one_or_none()
+    if not t:
+        raise HTTPException(status_code=404, detail="Trade not found")
+    if t.status == "CLOSED":
+        raise HTTPException(status_code=409, detail="ปิดไปแล้ว")
+    client = BitkubClient()
+    price = await client.last_price(t.symbol)
+    if not price:
+        raise HTTPException(status_code=404, detail=f"ดึงราคา {t.symbol} ไม่ได้")
+    pnl = close_pnl(t.entry_price, price, t.size_thb, t.qty)
+    t.status = "CLOSED"
+    t.exit_at = datetime.now(timezone.utc)
+    t.exit_price = price
+    t.exit_reason = "manual"
+    t.pnl_thb = pnl["pnl_thb"]
+    t.pnl_pct = pnl["pnl_pct"]
+    t.result = pnl["result"]
+    return _trade_out(t)
+
+
+@router.get("/paper/positions/workspace/{workspace_id}")
+async def paper_positions(
+    workspace_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Open positions + live unrealized PnL."""
+    res = await db.execute(
+        select(PaperTrade).where(
+            PaperTrade.workspace_id == workspace_id, PaperTrade.status == "OPEN"
+        ).order_by(PaperTrade.entry_at.desc())
+    )
+    rows = res.scalars().all()
+    client = BitkubClient()
+    out = []
+    for t in rows:
+        d = _trade_out(t)
+        price = await client.last_price(t.symbol)
+        d["live"] = unrealized(t.entry_price, price, t.size_thb, t.qty) if price else None
+        out.append(d)
+    return {"positions": out, "count": len(out)}
+
+
+@router.get("/paper/trades/workspace/{workspace_id}")
+async def paper_trades(
+    workspace_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Closed-trade journal (newest first)."""
+    res = await db.execute(
+        select(PaperTrade).where(
+            PaperTrade.workspace_id == workspace_id, PaperTrade.status == "CLOSED"
+        ).order_by(PaperTrade.exit_at.desc())
+    )
+    return {"trades": [_trade_out(t) for t in res.scalars().all()]}
+
+
+@router.get("/paper/stats/workspace/{workspace_id}")
+async def paper_stats_endpoint(
+    workspace_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Accumulated stats over closed paper trades."""
+    res = await db.execute(
+        select(PaperTrade).where(
+            PaperTrade.workspace_id == workspace_id, PaperTrade.status == "CLOSED"
+        )
+    )
+    closed = [{"pnl_pct": t.pnl_pct or 0.0, "pnl_thb": t.pnl_thb or 0.0}
+              for t in res.scalars().all()]
+    return paper_stats(closed)

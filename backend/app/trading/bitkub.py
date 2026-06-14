@@ -86,6 +86,14 @@ class BitkubClient:
             r.raise_for_status()
             return r.json()
 
+    async def last_price(self, symbol: str) -> float | None:
+        """Latest traded price. Accepts tradingview (BTC_THB) or market (THB_BTC)."""
+        market = to_market_symbol(symbol)
+        data = await self.ticker()          # full ticker dict keyed by market symbol
+        rec = data.get(market) if isinstance(data, dict) else None
+        last = rec.get("last") if isinstance(rec, dict) else None
+        return float(last) if last is not None else None
+
     async def fetch_ohlcv(
         self, symbol: str, timeframe: str, limit: int | None = None
     ) -> list[Candle]:
@@ -147,6 +155,17 @@ class BitkubClient:
         for tf in tfs:
             out[tf] = await self.fetch_ohlcv(symbol, tf)
         return out
+
+
+def to_market_symbol(symbol: str) -> str:
+    """Normalize to Bitkub market format QUOTE_BASE, e.g. 'BTC_THB' → 'THB_BTC'."""
+    s = symbol.upper().strip()
+    if "_" not in s:
+        return s
+    a, b = s.split("_", 1)
+    if b in ("THB", "USDT") and a not in ("THB", "USDT"):
+        return f"{b}_{a}"
+    return s
 
 
 def to_tradingview_symbol(symbol: str) -> str:

@@ -23,3 +23,14 @@ class WatchlistItemCreate(BaseModel):
 class WatchlistItemUpdate(BaseModel):
     enabled: bool | None = None
     strategies: list | None = None
+
+
+class PaperOpen(BaseModel):
+    symbol: str
+    size_thb: float = 10000.0
+    timeframe: str = "1H"
+    strategy: str = "manual"
+    stop: float | None = None
+    target: float | None = None
+    rationale: str | None = None
+    indicators: dict = {}

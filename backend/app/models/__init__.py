@@ -10,6 +10,7 @@ from app.models.memory import Memory
 from app.models.event import UsageEvent
 from app.models.audit import AuditLog
 from app.models.watchlist import WatchlistItem
+from app.models.paper import PaperTrade
 
 __all__ = [
     "User", "UserRole",
@@ -24,4 +25,5 @@ __all__ = [
     "UsageEvent",
     "AuditLog",
     "WatchlistItem",
+    "PaperTrade",
 ]
