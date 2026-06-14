@@ -81,6 +81,14 @@ export default function TradingPage() {
   };
   useEffect(loadWatchlist, [current]);
 
+  // keep backtest symbol valid: default to a watchlist symbol if current isn't one
+  useEffect(() => {
+    if (watchlist.length > 0 && !watchlist.some((w) => w.symbol === btSymbol)) {
+      setBtSymbol(watchlist[0].symbol);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [watchlist]);
+
   useEffect(() => {
     api.get(`/trading/symbols`)
       .then((r) => setAllSymbols(r.data.map((s: any) => s.symbol)))
@@ -506,15 +514,28 @@ export default function TradingPage() {
       {/* ── Backtest ── */}
       <div className="mt-6 rounded-xl border border-white/10 bg-[#141228]/70 backdrop-blur-md">
         <div className="flex flex-wrap items-center gap-2 border-b border-white/10 px-4 py-3">
-          <span className="text-sm font-semibold text-white/70">🧪 Backtest — EMA Pullback</span>
+          <span className="text-sm font-semibold text-white/70">🧪 Backtest</span>
+          <span className="text-[10px] text-white/30">เจาะลึกทีละเหรียญ</span>
           <div className="flex-1" />
-          <input
-            list="symbol-list"
-            value={btSymbol}
-            onChange={(e) => setBtSymbol(e.target.value)}
-            placeholder="BTC_THB"
-            className="w-32 rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-white placeholder-white/30 focus:border-accent-500/50 focus:outline-none"
-          />
+          {watchlist.length > 0 ? (
+            <select
+              value={btSymbol}
+              onChange={(e) => setBtSymbol(e.target.value)}
+              className="w-32 rounded-lg border border-white/10 bg-white/5 px-2 py-1.5 text-xs text-white focus:border-accent-500/50 focus:outline-none"
+            >
+              {watchlist.map((w) => (
+                <option key={w.id} value={w.symbol} className="bg-[#1a1040]">{w.symbol}</option>
+              ))}
+            </select>
+          ) : (
+            <input
+              list="symbol-list"
+              value={btSymbol}
+              onChange={(e) => setBtSymbol(e.target.value)}
+              placeholder="BTC_THB"
+              className="w-32 rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-white placeholder-white/30 focus:border-accent-500/50 focus:outline-none"
+            />
+          )}
           <select
             value={btTf}
             onChange={(e) => setBtTf(e.target.value)}
