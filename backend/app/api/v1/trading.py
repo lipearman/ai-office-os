@@ -1,7 +1,7 @@
 import uuid
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, delete
+from sqlalchemy import select, delete, update
 
 from app.core.database import get_db
 from app.models.user import User
@@ -326,13 +326,14 @@ async def get_alerts(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Alerts สะสมจาก worker (เตือนแม้ปิดหน้า)."""
+    """Alerts สะสมจาก worker (เตือนแม้ปิดหน้า) + จำนวนที่ยังไม่อ่าน."""
     res = await db.execute(
         select(TradingAlert)
         .where(TradingAlert.workspace_id == workspace_id)
         .order_by(TradingAlert.created_at.desc())
         .limit(50)
     )
+    rows = res.scalars().all()
     alerts = [
         {
             "id": a.id.hex, "symbol": a.symbol, "strategy": a.strategy,
@@ -340,9 +341,35 @@ async def get_alerts(
             "label": a.label, "text": a.text, "is_read": a.is_read,
             "ts": a.created_at.timestamp() if a.created_at else None,
         }
-        for a in res.scalars().all()
+        for a in rows
     ]
-    return {"alerts": alerts}
+    return {"alerts": alerts, "unread": sum(1 for a in rows if not a.is_read)}
+
+
+@router.post("/alerts/{alert_id}/read", status_code=204)
+async def mark_alert_read(
+    alert_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    await db.execute(
+        update(TradingAlert).where(TradingAlert.id == alert_id).values(is_read=True)
+    )
+    await db.commit()
+
+
+@router.post("/alerts/workspace/{workspace_id}/read-all", status_code=204)
+async def mark_all_alerts_read(
+    workspace_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    await db.execute(
+        update(TradingAlert)
+        .where(TradingAlert.workspace_id == workspace_id, TradingAlert.is_read == False)  # noqa: E712
+        .values(is_read=True)
+    )
+    await db.commit()
 
 
 @router.delete("/alerts/workspace/{workspace_id}", status_code=204)

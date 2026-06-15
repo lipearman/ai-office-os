@@ -92,6 +92,23 @@ export default function TradingPage() {
   const serverAlertSeen = useRef<Set<string>>(new Set());
   const serverAlertFirst = useRef(true);
 
+  // ── alert center (persistent history + read state) ──
+  type ServerAlert = { id: string; text: string; symbol: string; is_read: boolean; ts: number | null };
+  const [alertHistory, setAlertHistory] = useState<ServerAlert[]>([]);
+  const [alertUnread, setAlertUnread] = useState(0);
+  const [showAlertCenter, setShowAlertCenter] = useState(false);
+  const markAllRead = async () => {
+    if (!current) return;
+    await api.post(`/trading/alerts/workspace/${current.id}/read-all`).catch(() => {});
+    setAlertHistory((h) => h.map((a) => ({ ...a, is_read: true })));
+    setAlertUnread(0);
+  };
+  const markRead = async (id: string) => {
+    await api.post(`/trading/alerts/${id}/read`).catch(() => {});
+    setAlertHistory((h) => h.map((a) => (a.id === id ? { ...a, is_read: true } : a)));
+    setAlertUnread((n) => Math.max(0, n - 1));
+  };
+
   // ── load watchlist + symbol list ──
   const loadWatchlist = () => {
     if (!current) return;
@@ -353,6 +370,8 @@ export default function TradingPage() {
       try {
         const r = await api.get(`/trading/alerts/workspace/${current.id}`);
         const serverAlerts: any[] = r.data.alerts ?? [];
+        setAlertHistory(serverAlerts);
+        setAlertUnread(r.data.unread ?? 0);
         const fresh = serverAlerts.filter((a) => !serverAlertSeen.current.has(a.id));
         fresh.forEach((a) => serverAlertSeen.current.add(a.id));
         // on first poll just record (don't spam old alerts as new)
@@ -452,6 +471,38 @@ export default function TradingPage() {
             <RefreshCw size={13} className={oppsLoading ? "animate-spin" : ""} />
             {oppsLoading ? "กำลังประเมิน…" : "ประเมินโอกาสวันนี้"}
           </button>
+        </div>
+
+        {/* alert center (persistent history + read state) */}
+        <div className="relative flex items-center justify-end border-b border-white/10 px-4 py-1.5">
+          <button onClick={() => setShowAlertCenter((s) => !s)}
+            className="relative flex items-center gap-1 rounded-md border border-white/15 px-2 py-1 text-[11px] text-white/70 hover:bg-white/10">
+            <Bell size={12} /> Alerts
+            {alertUnread > 0 && (
+              <span className="ml-0.5 rounded-full bg-primary-500 px-1.5 text-[9px] font-bold text-white">{alertUnread}</span>
+            )}
+          </button>
+          {showAlertCenter && (
+            <div className="absolute right-4 top-full z-20 mt-1 max-h-[60vh] w-[320px] overflow-auto rounded-xl border border-white/15 bg-[#13111c] p-2 shadow-2xl">
+              <div className="mb-1.5 flex items-center justify-between px-1">
+                <span className="text-[11px] font-semibold text-white">ประวัติ Alert</span>
+                <button onClick={markAllRead} disabled={alertUnread === 0}
+                  className="text-[10px] text-accent-300 hover:underline disabled:text-white/25 disabled:no-underline">อ่านทั้งหมด</button>
+              </div>
+              {alertHistory.length === 0 && <p className="px-1 py-3 text-center text-[10px] text-white/30">ยังไม่มี alert</p>}
+              <div className="space-y-1">
+                {alertHistory.map((a) => (
+                  <div key={a.id} className={`flex items-start gap-2 rounded-lg border px-2 py-1.5 text-[11px] ${a.is_read ? "border-white/5 text-white/40" : "border-green-500/30 bg-green-500/10 text-green-100"}`}>
+                    <Bell size={11} className="mt-0.5 shrink-0" />
+                    <span className="flex-1 leading-snug">{a.text}</span>
+                    {!a.is_read && (
+                      <button onClick={() => markRead(a.id)} title="ทำเครื่องหมายอ่านแล้ว" className="text-white/30 hover:text-white"><X size={11} /></button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* alert banners */}
