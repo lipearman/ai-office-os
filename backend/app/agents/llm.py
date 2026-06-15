@@ -24,6 +24,13 @@ def _build_openai(model: str) -> BaseChatModel | None:
     return ChatOpenAI(model=model, api_key=settings.OPENAI_API_KEY, temperature=0.3, streaming=True)
 
 
+def _build_anthropic(model: str) -> BaseChatModel | None:
+    if not settings.ANTHROPIC_API_KEY:
+        return None
+    from langchain_anthropic import ChatAnthropic
+    return ChatAnthropic(model=model, api_key=settings.ANTHROPIC_API_KEY, temperature=0.3)
+
+
 def _build_gemini(model: str) -> BaseChatModel | None:
     if not settings.GEMINI_API_KEY:
         return None
@@ -48,6 +55,7 @@ def _build_ollama(model: str) -> BaseChatModel | None:
 
 _BUILDERS: dict[str, Callable[[str], BaseChatModel | None]] = {
     "openai": _build_openai,
+    "anthropic": _build_anthropic,
     "gemini": _build_gemini,
     "openrouter": _build_openrouter,
     "ollama": _build_ollama,
@@ -56,6 +64,7 @@ _BUILDERS: dict[str, Callable[[str], BaseChatModel | None]] = {
 # default model per provider when the agent says "auto"
 _DEFAULT_MODEL: dict[str, str] = {
     "openai": "gpt-4o-mini",
+    "anthropic": "claude-sonnet-4-6",
     "gemini": "gemini-1.5-flash",
     "openrouter": settings.OPENROUTER_MODEL or "meta-llama/llama-3.1-8b-instruct:free",
     "ollama": settings.DEFAULT_LLM_MODEL or "qwen2.5:7b-instruct",

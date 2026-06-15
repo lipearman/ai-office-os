@@ -23,6 +23,7 @@ class Settings(BaseSettings):
 
     # LLM
     OPENAI_API_KEY: str = ""
+    ANTHROPIC_API_KEY: str = ""
     GEMINI_API_KEY: str = ""
     OPENROUTER_API_KEY: str = ""
     OPENROUTER_MODEL: str = ""   # e.g. "meta-llama/llama-3.1-8b-instruct" — override the default OpenRouter model
