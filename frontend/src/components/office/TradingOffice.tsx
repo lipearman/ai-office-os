@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, useCallback } from "react";
 import api from "@/lib/api";
+import { wsManager } from "@/hooks/useWebSocket";
 import { useWorkspaceStore } from "@/store/workspace";
 import { useTemplatesStore, resolveAssetUrl, type Marker } from "@/store/officeTemplates";
 import { RefreshCw, Pencil } from "lucide-react";
@@ -125,6 +126,21 @@ export default function TradingOffice({ officeName }: Props) {
     const t = setInterval(load, POLL_MS);
     return () => clearInterval(t);
   }, [current, editMode, load]);
+
+  // realtime push from the worker (Redis → WS) — update instantly, no waiting for the poll
+  useEffect(() => {
+    if (!current || editMode) return;
+    const onDeskUpdate = (e: Record<string, unknown> & { type: string }) => {
+      const wsId = e.workspace_id as string | undefined;
+      if (wsId && wsId !== current.id) return;
+      setChars((e.characters as DeskChar[]) ?? []);
+      setUpdated(new Date());
+      setWarming(false);
+      setError(null);
+    };
+    wsManager.on("desk.update", onDeskUpdate);
+    return () => wsManager.off("desk.update", onDeskUpdate);
+  }, [current, editMode]);
 
   // what a character actually says: LLM commentary if present, else the fact.
   const spokenText = (c: DeskChar) => (c.commentary && c.commentary.trim()) || c.message;

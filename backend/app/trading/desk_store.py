@@ -11,10 +11,29 @@ reads it. Two granularities:
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.redis import get_redis
+
+# Redis channel the worker publishes desk updates on; the API process bridges
+# these to connected WebSocket clients (works across separate processes).
+DESK_CHANNEL = "desk-updates"
+
+
+async def _publish(workspace_id, characters) -> None:
+    """Best-effort realtime push of the latest desk state via Redis."""
+    try:
+        r = await get_redis()
+        await r.publish(
+            DESK_CHANNEL,
+            json.dumps({"workspace_id": str(workspace_id), "characters": characters}, default=str),
+        )
+    except Exception:
+        pass
 
 from app.models.watchlist import WatchlistItem
 from app.models.paper import PaperTrade
@@ -159,6 +178,7 @@ async def compute_full(db: AsyncSession, workspace_id) -> DeskSnapshot:
     snap.computed_at = now
     snap.priced_at = now
     await db.commit()
+    await _publish(workspace_id, snap.characters)
     return snap
 
 
@@ -188,4 +208,5 @@ async def refresh_prices(db: AsyncSession, workspace_id) -> DeskSnapshot | None:
     snap.meta = meta
     snap.priced_at = datetime.now(timezone.utc)
     await db.commit()
+    await _publish(workspace_id, snap.characters)
     return snap

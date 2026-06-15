@@ -24,7 +24,17 @@ async def lifespan(app: FastAPI):
         start_scheduler()
     except Exception as e:
         log.warning("scheduler_start_failed", error=str(e))
+    try:
+        from app.trading.realtime import start_realtime
+        start_realtime()
+    except Exception as e:
+        log.warning("desk_realtime_start_failed", error=str(e))
     yield
+    try:
+        from app.trading.realtime import stop_realtime
+        await stop_realtime()
+    except Exception:
+        pass
     try:
         from app.trading.scheduler import stop_scheduler
         stop_scheduler()
