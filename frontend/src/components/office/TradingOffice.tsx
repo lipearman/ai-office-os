@@ -60,6 +60,7 @@ export default function TradingOffice({ officeName }: Props) {
   const [updated, setUpdated] = useState<Date | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [warming, setWarming] = useState(false);  // worker hasn't produced a snapshot yet
 
   // edit mode
   const [editMode, setEditMode] = useState(false);
@@ -84,6 +85,7 @@ export default function TradingOffice({ officeName }: Props) {
       setChars(r.data.characters ?? []);
       setUpdated(new Date());
       setError(null);
+      setWarming(r.data.status === "warming_up");
     } catch {
       setError("โหลดข้อมูลโต๊ะเทรดไม่ได้ — ลองรีเฟรช");
     } finally { setLoading(false); }
@@ -208,6 +210,11 @@ export default function TradingOffice({ officeName }: Props) {
         {!editMode && error && (
           <span className="rounded-full bg-red-500/20 px-2 py-0.5 text-[10px] font-semibold text-red-300">
             ⚠️ {error}
+          </span>
+        )}
+        {!editMode && !error && warming && (
+          <span className="rounded-full bg-amber-500/20 px-2 py-0.5 text-[10px] font-semibold text-amber-300">
+            ⏳ worker กำลังเริ่มประมวลผล…
           </span>
         )}
         <div className="ml-auto flex items-center gap-2 text-[11px] text-white/40">
