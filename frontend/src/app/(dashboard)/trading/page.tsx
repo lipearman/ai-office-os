@@ -74,6 +74,10 @@ export default function TradingPage() {
   const [oppsLoading, setOppsLoading] = useState(false);
   const [oppsRun, setOppsRun]     = useState(false);
 
+  // ── news & sentiment ──
+  const [news, setNews]           = useState<any>(null);
+  const [newsLoading, setNewsLoading] = useState(false);
+
   // ── paper trading ──
   const [paperStats, setPaperStats]   = useState<any>(null);
   const [paperPos, setPaperPos]       = useState<any[]>([]);
@@ -85,6 +89,8 @@ export default function TradingPage() {
   const [alertMsgs, setAlertMsgs] = useState<{ id: number; text: string }[]>([]);
   const prevSignals = useRef<Set<string>>(new Set());
   const alertCheckedOnce = useRef(false);
+  const serverAlertSeen = useRef<Set<string>>(new Set());
+  const serverAlertFirst = useRef(true);
 
   // ── load watchlist + symbol list ──
   const loadWatchlist = () => {
@@ -181,6 +187,16 @@ export default function TradingPage() {
       setBtLoading(false);
     }
   };
+
+  const loadNews = async () => {
+    if (!current) return;
+    setNewsLoading(true);
+    try {
+      const r = await api.get(`/trading/news/workspace/${current.id}`);
+      setNews(r.data);
+    } catch { /* ignore */ } finally { setNewsLoading(false); }
+  };
+  useEffect(() => { loadNews(); /* eslint-disable-next-line */ }, [current]);
 
   const loadPaper = async () => {
     if (!current) return;
@@ -329,6 +345,31 @@ export default function TradingPage() {
     prevSignals.current = nowSig;
     alertCheckedOnce.current = true;
   }, [opps]);
+
+  // server-side alerts: poll every 60s so setups detected while away show up
+  useEffect(() => {
+    if (!current) return;
+    const poll = async () => {
+      try {
+        const r = await api.get(`/trading/alerts/workspace/${current.id}`);
+        const serverAlerts: any[] = r.data.alerts ?? [];
+        const fresh = serverAlerts.filter((a) => !serverAlertSeen.current.has(a.id));
+        fresh.forEach((a) => serverAlertSeen.current.add(a.id));
+        // on first poll just record (don't spam old alerts as new)
+        if (!serverAlertFirst.current && fresh.length) {
+          setAlertMsgs((prev) => [
+            ...fresh.map((a) => ({ id: Date.now() + Math.random(), text: `🔔 ${a.text}` })),
+            ...prev,
+          ].slice(0, 5));
+        }
+        serverAlertFirst.current = false;
+      } catch { /* ignore */ }
+    };
+    poll();
+    const t = setInterval(poll, 60_000);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [current]);
 
   // auto-alert loop: poll opportunities every 5 min while enabled
   useEffect(() => {
@@ -662,6 +703,67 @@ export default function TradingPage() {
             )}
           </div>
         </div>
+      </div>
+
+      {/* ── News & Sentiment ── */}
+      <div className="mt-6 rounded-xl border border-white/10 bg-[#141228]/70 backdrop-blur-md">
+        <div className="flex items-center gap-2 border-b border-white/10 px-4 py-3">
+          <span className="text-sm font-semibold text-white/70">📰 News & Sentiment</span>
+          <span className="text-[10px] text-white/30">RSS · ข่าวเหรียญใน watchlist</span>
+          <div className="flex-1" />
+          <button onClick={loadNews} disabled={newsLoading}
+            className="flex items-center gap-1.5 rounded-lg border border-white/15 px-3 py-1.5 text-xs text-white/60 transition hover:bg-white/10 disabled:opacity-50">
+            <RefreshCw size={13} className={newsLoading ? "animate-spin" : ""} /> รีเฟรช
+          </button>
+        </div>
+
+        {newsLoading && !news && <p className="px-4 py-6 text-center text-xs text-white/40">กำลังดึงข่าว…</p>}
+        {news && (
+          <div className="grid gap-4 p-4 lg:grid-cols-2">
+            {/* per-asset sentiment */}
+            <div>
+              <p className="mb-2 text-[11px] font-semibold text-white/50">Sentiment รายเหรียญ</p>
+              {news.assets?.length === 0 && <p className="text-[11px] text-white/30">ยังไม่มีข่าวที่เกี่ยวกับเหรียญใน watchlist</p>}
+              <div className="space-y-1.5">
+                {news.assets?.map((a: any) => (
+                  <div key={a.asset} className="flex items-center gap-2 rounded-lg border border-white/10 bg-black/20 px-3 py-2 text-[11px]">
+                    <span className="w-12 shrink-0 font-bold text-white">{a.asset}</span>
+                    <span className="w-16 shrink-0">{a.label}</span>
+                    <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-white/5">
+                      <div className="h-full rounded-full"
+                        style={{
+                          width: `${Math.abs(a.sentiment) * 100}%`,
+                          marginLeft: a.sentiment < 0 ? `${(1 - Math.abs(a.sentiment)) * 100}%` : 0,
+                          background: a.sentiment > 0.15 ? "#4ade80" : a.sentiment < -0.15 ? "#f87171" : "#64748b",
+                        }} />
+                    </div>
+                    <span className="w-20 shrink-0 text-right text-white/30">
+                      {a.count} ข่าว · {a.bullish}↑/{a.bearish}↓
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* headlines */}
+            <div>
+              <p className="mb-2 text-[11px] font-semibold text-white/50">พาดหัวล่าสุด</p>
+              <div className="max-h-56 space-y-1 overflow-y-auto">
+                {news.items?.slice(0, 12).map((it: any, i: number) => (
+                  <a key={i} href={it.url} target="_blank" rel="noreferrer"
+                    className="flex items-start gap-2 rounded-lg px-2 py-1.5 text-[11px] transition hover:bg-white/[0.04]">
+                    <span className="shrink-0">{it.stance === "bullish" ? "🟢" : it.stance === "bearish" ? "🔴" : "⚪"}</span>
+                    <span className="flex-1 text-white/70">
+                      {it.title}
+                      <span className="ml-1 text-white/25">· {it.source} · {it.assets.join(",")}</span>
+                    </span>
+                  </a>
+                ))}
+              </div>
+            </div>
+            <p className="lg:col-span-2 text-[10px] text-amber-300/50">🔒 {news.disclaimer}</p>
+          </div>
+        )}
       </div>
 
       {/* ── Backtest ── */}

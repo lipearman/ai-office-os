@@ -11,12 +11,14 @@ from app.schemas.trading import (
     WatchlistItemOut, WatchlistItemCreate, WatchlistItemUpdate, PaperOpen,
 )
 from app.trading.paper import fill_open, close_pnl, unrealized, paper_stats
+from app.trading.news import fetch_news, aggregate_sentiment
+from app.trading import alerts as alert_store
 from datetime import datetime, timezone
 from app.api.deps import get_current_user
 from app.trading.bitkub import BitkubClient, to_tradingview_symbol, TIMEFRAMES
 from app.trading.service import (
     analyze_with_brief, scan_symbols, backtest_symbol, optimize_symbol, ml_symbol,
-    daily_opportunity, daily_opportunities,
+    daily_opportunity, daily_opportunities, build_desk,
 )
 
 router = APIRouter(prefix="/trading", tags=["trading"])
@@ -255,6 +257,94 @@ async def opportunities(
         return {"results": [], "count": 0}
     results = await daily_opportunities(items)
     return {"results": results, "count": len(results)}
+
+
+# ── trading desk (7 characters from real data) ──────────────────
+@router.get("/desk/workspace/{workspace_id}")
+async def trading_desk(
+    workspace_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """7 trading-desk characters speaking from live data (for /office)."""
+    res = await db.execute(
+        select(WatchlistItem).where(
+            WatchlistItem.workspace_id == workspace_id,
+            WatchlistItem.enabled == True,  # noqa: E712
+        )
+    )
+    items = [
+        {"symbol": w.symbol, "cfg": (w.strategies[0] if w.strategies else None)}
+        for w in res.scalars().all()
+    ]
+    opps = await daily_opportunities(items) if items else []
+
+    pres = await db.execute(
+        select(PaperTrade).where(
+            PaperTrade.workspace_id == workspace_id, PaperTrade.status == "OPEN"
+        )
+    )
+    positions = [{"symbol": t.symbol} for t in pres.scalars().all()]
+
+    cres = await db.execute(
+        select(PaperTrade).where(
+            PaperTrade.workspace_id == workspace_id, PaperTrade.status == "CLOSED"
+        )
+    )
+    closed = [{"pnl_pct": t.pnl_pct or 0.0, "pnl_thb": t.pnl_thb or 0.0}
+              for t in cres.scalars().all()]
+    stats = paper_stats(closed)
+
+    assets = sorted({w["symbol"].split("_")[0] for w in items})
+    news_items = await fetch_news()
+    news_agg = aggregate_sentiment(news_items, assets or None)
+
+    return {"characters": build_desk(opps, positions, stats, news_agg)}
+
+
+# ── server-side alerts (detected by the scheduler) ──────────────
+@router.get("/alerts/workspace/{workspace_id}")
+async def get_alerts(
+    workspace_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+):
+    """Alerts สะสมจาก scheduler (เตือนแม้ปิดหน้า)."""
+    return {"alerts": alert_store.get_alerts(workspace_id)}
+
+
+@router.delete("/alerts/workspace/{workspace_id}", status_code=204)
+async def clear_alerts(
+    workspace_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+):
+    alert_store.clear_alerts(workspace_id)
+
+
+# ── news & sentiment ────────────────────────────────────────────
+@router.get("/news")
+async def news_all(current_user: User = Depends(get_current_user)):
+    """ข่าวคริปโตล่าสุด + sentiment รายเหรียญ (ทุกเหรียญ)."""
+    items = await fetch_news()
+    agg = aggregate_sentiment(items)
+    return {"items": [i.to_dict() for i in items[:30]], **agg}
+
+
+@router.get("/news/workspace/{workspace_id}")
+async def news_workspace(
+    workspace_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """ข่าว + sentiment กรองเฉพาะเหรียญใน watchlist."""
+    res = await db.execute(
+        select(WatchlistItem).where(WatchlistItem.workspace_id == workspace_id)
+    )
+    assets = sorted({w.symbol.split("_")[0] for w in res.scalars().all()})
+    items = await fetch_news()
+    agg = aggregate_sentiment(items, assets or None)
+    # only headlines mentioning watchlist assets
+    rel = [i for i in items if not assets or any(a in assets for a in i.assets)]
+    return {"items": [i.to_dict() for i in rel[:30]], "assets_filter": assets, **agg}
 
 
 # ── paper trading ───────────────────────────────────────────────

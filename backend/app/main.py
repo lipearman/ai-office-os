@@ -19,7 +19,17 @@ log = structlog.get_logger()
 async def lifespan(app: FastAPI):
     log.info("Starting AI Office OS", version=settings.VERSION)
     await init_db()
+    try:
+        from app.trading.scheduler import start_scheduler
+        start_scheduler()
+    except Exception as e:
+        log.warning("scheduler_start_failed", error=str(e))
     yield
+    try:
+        from app.trading.scheduler import stop_scheduler
+        stop_scheduler()
+    except Exception:
+        pass
     await close_redis()
     log.info("Shutdown complete")
 

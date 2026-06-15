@@ -216,6 +216,81 @@ async def daily_opportunities(items: list[dict], concurrency: int = 4) -> list[d
     return out
 
 
+def build_desk(opps: list[dict], positions: list[dict], stats: dict,
+               news_agg: dict) -> list[dict]:
+    """Synthesize 7 trading-desk characters' current messages from real data.
+
+    Deterministic (no LLM) — each character speaks from the live state.
+    """
+    sig = [o for o in opps if o.get("signal_today")]
+    top = sig[0] if sig else (opps[0] if opps else None)
+    n_pos = len(positions)
+    news_assets = news_agg.get("assets", []) if news_agg else []
+    news_top = news_assets[0] if news_assets else None
+
+    # 📊 Market Analyst
+    if sig:
+        analyst = f"วันนี้มี {len(sig)} เหรียญเข้า setup — เด่นสุด {top['symbol']} (win ~{top.get('win_chance_pct')}%)"
+    elif opps:
+        analyst = f"ยังไม่มีเหรียญเข้า setup วันนี้ — เฝ้าดู {len(opps)} เหรียญใน watchlist"
+    else:
+        analyst = "ยังไม่มีเหรียญใน watchlist — เพิ่มเหรียญเพื่อเริ่มวิเคราะห์"
+
+    # 📰 News & Sentiment
+    if news_top:
+        news_msg = f"{news_top['asset']}: {news_top['label']} ({news_top['count']} ข่าว, {news_top['bullish']}↑/{news_top['bearish']}↓)"
+    else:
+        news_msg = "ยังไม่มีข่าวเด่นเกี่ยวกับเหรียญใน watchlist"
+
+    # 🛡️ Risk Officer
+    if n_pos == 0:
+        risk = "ไม่มี position เปิดอยู่ — ความเสี่ยงเป็นศูนย์"
+    elif n_pos <= 3:
+        risk = f"มี {n_pos} position เปิดอยู่ — ความเสี่ยงอยู่ในเกณฑ์โอเค"
+    else:
+        risk = f"⚠️ มี {n_pos} position เปิดพร้อมกัน — ระวังความเสี่ยงกระจุกตัว"
+
+    # 🤖 Trader
+    if n_pos:
+        syms = ", ".join(p["symbol"] for p in positions[:3])
+        trader = f"ถืออยู่ {n_pos} ดีล: {syms}"
+    elif sig:
+        trader = f"พร้อมเข้า {top['symbol']} ถ้ายืนยัน — กด 📝 เทรดได้เลย"
+    else:
+        trader = "รอจังหวะ — ยังไม่มี setup ให้เข้า"
+
+    # 🎯 Coach
+    nt = stats.get("total_trades", 0)
+    if nt:
+        coach = f"สถิติสะสม: {nt} เทรด, ชนะ {stats.get('win_rate')}%, PnL {stats.get('total_pnl_thb')}฿"
+    else:
+        coach = "ยังไม่มีประวัติเทรด — เริ่ม paper trade เพื่อสะสมสถิติ"
+
+    # 📉 Model Monitor
+    assigned = [o for o in opps if o.get("assigned")]
+    if assigned:
+        monitor = f"{len(assigned)} เหรียญมีกลยุทธ์เฉพาะตัวที่ optimize แล้ว"
+    else:
+        monitor = "ยังไม่ได้ optimize กลยุทธ์ต่อเหรียญ — ลองใช้ Auto-Optimizer"
+
+    # 🔍 Execution Reviewer
+    if nt:
+        pf = stats.get("profit_factor")
+        exec_rev = f"Profit Factor {pf if pf is not None else '∞'} · avg win {stats.get('avg_win_pct')}% / loss {stats.get('avg_loss_pct')}%"
+    else:
+        exec_rev = "ยังไม่มีดีลปิดให้รีวิวคุณภาพการเข้า/ออก"
+
+    return [
+        {"key": "trader",   "name": "Trader",          "emoji": "🤖", "role": "engine",   "message": trader},
+        {"key": "analyst",  "name": "Market Analyst",  "emoji": "📊", "role": "advisory", "message": analyst},
+        {"key": "news",     "name": "News & Sentiment","emoji": "📰", "role": "advisory", "message": news_msg},
+        {"key": "risk",     "name": "Risk Officer",    "emoji": "🛡️", "role": "advisory", "message": risk},
+        {"key": "coach",    "name": "Coach",           "emoji": "🎯", "role": "advisory", "message": coach},
+        {"key": "monitor",  "name": "Model Monitor",   "emoji": "📉", "role": "advisory", "message": monitor},
+        {"key": "exec",     "name": "Execution Reviewer","emoji": "🔍","role": "advisory", "message": exec_rev},
+    ]
+
+
 # rank: BUY first, then by strength/alignment desc
 _SIGNAL_RANK = {"BUY": 0, "HOLD": 1, "SELL": 2}
 

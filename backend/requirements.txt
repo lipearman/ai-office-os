@@ -30,3 +30,7 @@ pypdf>=5.0.0
 # trading / quant core
 pandas>=2.2.0
 numpy>=2.0.0
+scikit-learn>=1.5.0
+xgboost>=2.1.0
+feedparser>=6.0.0
+APScheduler>=3.10.0

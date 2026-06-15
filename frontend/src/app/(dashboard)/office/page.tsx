@@ -10,6 +10,11 @@ const OfficeView = dynamic(
   { ssr: false, loading: () => <LoadingScreen /> }
 );
 
+const TradingDesk = dynamic(
+  () => import("@/components/office/TradingDesk"),
+  { ssr: false }
+);
+
 function LoadingScreen() {
   return (
     <div className="flex h-full items-center justify-center bg-[#0e0b16]">
@@ -47,7 +52,10 @@ export default function OfficePage() {
   return (
     <div className="absolute inset-0 overflow-hidden">
       {isLoading ? <LoadingScreen /> : office ? (
-        <OfficeView agents={agents} officeName={office.name} />
+        <>
+          <OfficeView agents={agents} officeName={office.name} />
+          <TradingDesk />
+        </>
       ) : (
         <div className="flex h-full items-center justify-center">
           <p className="text-white">ยังไม่มี Office</p>
