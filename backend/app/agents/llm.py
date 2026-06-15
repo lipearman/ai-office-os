@@ -22,7 +22,9 @@ def get_llm(provider: str = "auto", model: str = "auto") -> BaseChatModel:
     # OpenRouter
     if settings.OPENROUTER_API_KEY and (provider in ("auto", "openrouter")):
         from langchain_openai import ChatOpenAI
-        m = "meta-llama/llama-3.1-8b-instruct:free" if model == "auto" else model
+        # default model is overridable via OPENROUTER_MODEL (the old hard-coded
+        # ':free' slug has been retired by OpenRouter → 404)
+        m = (settings.OPENROUTER_MODEL or "meta-llama/llama-3.1-8b-instruct:free") if model == "auto" else model
         return ChatOpenAI(
             model=m,
             api_key=settings.OPENROUTER_API_KEY,

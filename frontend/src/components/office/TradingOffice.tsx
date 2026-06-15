@@ -11,7 +11,8 @@ interface DeskChar {
   name: string;
   emoji: string;
   role: string;
-  message: string;
+  message: string;        // deterministic fact (always current)
+  commentary?: string;    // optional LLM in-character remark (heavy tick)
 }
 
 type Pos = { x: number; y: number; scale: number };
@@ -98,16 +99,19 @@ export default function TradingOffice({ officeName }: Props) {
     return () => clearInterval(t);
   }, [current, editMode, load]);
 
-  // speak ONLY when a character's message is new (fresh data/analysis) —
+  // what a character actually says: LLM commentary if present, else the fact.
+  const spokenText = (c: DeskChar) => (c.commentary && c.commentary.trim()) || c.message;
+
+  // speak ONLY when a character's spoken line is new (fresh data/analysis) —
   // no blind re-streaming of the same line. Stagger so they don't all talk at once.
   useEffect(() => {
     if (editMode) { setBubbles({}); return; }
-    const fresh = chars.filter((c) => c.message && lastSpoken.current[c.key] !== c.message);
+    const fresh = chars.filter((c) => spokenText(c) && lastSpoken.current[c.key] !== spokenText(c));
     if (fresh.length === 0) return;
     const timers = fresh.map((c, i) =>
       setTimeout(() => {
-        lastSpoken.current[c.key] = c.message;
-        setBubbles((b) => ({ ...b, [c.key]: { text: c.message, idx: 0, phase: "stream", born: Date.now() } }));
+        lastSpoken.current[c.key] = spokenText(c);
+        setBubbles((b) => ({ ...b, [c.key]: { text: spokenText(c), idx: 0, phase: "stream", born: Date.now() } }));
       }, i * STAGGER_MS)
     );
     return () => timers.forEach(clearTimeout);
@@ -290,6 +294,9 @@ export default function TradingOffice({ officeName }: Props) {
           const shown = b.text.slice(0, b.idx);
           const fading = b.phase === "fade";
           const streaming = b.phase === "stream";
+          // when the bubble is the LLM remark, show the live deterministic fact beneath
+          const hasCommentary = !!(c.commentary && c.commentary.trim());
+          const showFact = hasCommentary && c.message && c.message !== b.text;
           return (
             <div key={key}
               className="absolute flex flex-col items-center transition-all duration-500"
@@ -309,6 +316,12 @@ export default function TradingOffice({ officeName }: Props) {
                   {shown}
                   {streaming && <span className="ml-px inline-block h-[1em] w-0.5 translate-y-0.5 animate-pulse rounded-sm bg-gray-500" />}
                 </span>
+                {/* live deterministic fact beneath the LLM remark */}
+                {showFact && !streaming && (
+                  <span className="mt-1 block border-t border-gray-200 pt-1 text-[10px] text-gray-500">
+                    {c.message}
+                  </span>
+                )}
                 {/* directional tail pointing down to the speaker's spot */}
                 <span className="absolute -bottom-[7px] left-1/2 h-3 w-3 -translate-x-1/2 rotate-45 bg-white/95"
                   style={{ borderRight: `3px solid ${color}`, borderBottom: `3px solid ${color}` }} />

@@ -25,7 +25,11 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: str = ""
     GEMINI_API_KEY: str = ""
     OPENROUTER_API_KEY: str = ""
+    OPENROUTER_MODEL: str = ""   # e.g. "meta-llama/llama-3.1-8b-instruct" — override the default OpenRouter model
     OLLAMA_BASE_URL: str = "http://localhost:11434"
+    # kill-switch for LLM 'color commentary' on the trading desk (worker calls
+    # the LLM on each heavy tick when a provider is configured)
+    DESK_LLM_ENABLED: bool = True
 
     # CORS
     ALLOWED_ORIGINS: list[str] = [
