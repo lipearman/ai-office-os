@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import time
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 
@@ -115,8 +116,22 @@ def _parse_feed(source: str, url: str, limit: int = 20) -> list[NewsItem]:
     return items
 
 
+# RSS rarely changes minute-to-minute; cache so frequent pollers (e.g. the
+# /office desk on a 15s loop) don't re-hit the feeds every time.
+_NEWS_TTL = 300.0  # 5 minutes
+_news_cache: dict[int, tuple[float, list[NewsItem]]] = {}
+
+
 async def fetch_news(limit_per_feed: int = 20) -> list[NewsItem]:
-    """Fetch + parse all feeds concurrently (feedparser is sync → thread)."""
+    """Fetch + parse all feeds concurrently (feedparser is sync → thread).
+
+    Results are cached per `limit_per_feed` for _NEWS_TTL seconds.
+    """
+    now = time.monotonic()
+    cached = _news_cache.get(limit_per_feed)
+    if cached and now - cached[0] < _NEWS_TTL:
+        return cached[1]
+
     tasks = [asyncio.to_thread(_parse_feed, name, url, limit_per_feed) for name, url in FEEDS]
     results = await asyncio.gather(*tasks, return_exceptions=True)
     items: list[NewsItem] = []
@@ -125,6 +140,9 @@ async def fetch_news(limit_per_feed: int = 20) -> list[NewsItem]:
             items.extend(r)
     # newest first
     items.sort(key=lambda x: x.published_at, reverse=True)
+    # only cache a non-empty fetch — keep retrying if all feeds failed
+    if items:
+        _news_cache[limit_per_feed] = (now, items)
     return items
 
 

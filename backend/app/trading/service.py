@@ -272,24 +272,45 @@ def build_desk(opps: list[dict], positions: list[dict], stats: dict,
     else:
         trader = "รอจังหวะ — ยังไม่มี setup ให้เข้า"
 
-    # 🎯 Coach
+    # 🎯 Coach — rotate through real stat facets by `seed` so the desk keeps
+    # talking instead of saying the same line once and going silent.
     nt = stats.get("total_trades", 0)
     if nt:
-        coach = f"สถิติสะสม: {nt} เทรด, ชนะ {stats.get('win_rate')}%, PnL {stats.get('total_pnl_thb')}฿"
+        wr = stats.get("win_rate") or 0
+        coach_lines = [
+            f"สถิติสะสม: {nt} เทรด, ชนะ {stats.get('win_rate')}%, PnL {stats.get('total_pnl_thb')}฿",
+            f"Expectancy {stats.get('expectancy_pct')}% ต่อเทรด ({stats.get('wins')}W/{stats.get('losses')}L)",
+            f"win rate {wr}% — " + ("รักษาวินัยไว้ อย่าเพิ่งเพิ่มไซซ์" if wr >= 50 else "เน้น setup คุณภาพ อย่าไล่ราคา"),
+        ]
+        coach = coach_lines[seed % len(coach_lines)]
     else:
         coach = "ยังไม่มีประวัติเทรด — เริ่ม paper trade เพื่อสะสมสถิติ"
 
-    # 📉 Model Monitor
+    # 📉 Model Monitor — rotate real facets (assigned strategies / watch coverage / top score)
     assigned = [o for o in opps if o.get("assigned")]
-    if assigned:
-        monitor = f"{len(assigned)} เหรียญมีกลยุทธ์เฉพาะตัวที่ optimize แล้ว"
+    if opps:
+        monitor_lines: list[str] = []
+        if assigned:
+            monitor_lines.append(f"{len(assigned)} เหรียญมีกลยุทธ์เฉพาะตัวที่ optimize แล้ว")
+        else:
+            monitor_lines.append("ยังไม่ได้ optimize กลยุทธ์ต่อเหรียญ — ลองใช้ Auto-Optimizer")
+        monitor_lines.append(f"เฝ้า {len(opps)} เหรียญ · มีสัญญาณวันนี้ {len(sig)}")
+        if top is not None and top.get("opportunity_score") is not None:
+            monitor_lines.append(f"{top['symbol']} opportunity score {top.get('opportunity_score')}")
+        monitor = monitor_lines[seed % len(monitor_lines)]
     else:
         monitor = "ยังไม่ได้ optimize กลยุทธ์ต่อเหรียญ — ลองใช้ Auto-Optimizer"
 
-    # 🔍 Execution Reviewer
+    # 🔍 Execution Reviewer — rotate quality facets by `seed`
     if nt:
         pf = stats.get("profit_factor")
-        exec_rev = f"Profit Factor {pf if pf is not None else '∞'} · avg win {stats.get('avg_win_pct')}% / loss {stats.get('avg_loss_pct')}%"
+        wins = stats.get("wins") or 0
+        losses = stats.get("losses") or 0
+        exec_lines = [
+            f"Profit Factor {pf if pf is not None else '∞'} · avg win {stats.get('avg_win_pct')}% / loss {stats.get('avg_loss_pct')}%",
+            f"{wins} ดีลกำไร / {losses} ขาดทุน — " + ("คุณภาพการเข้าโอเค" if wins >= losses else "ทบทวนจังหวะเข้า"),
+        ]
+        exec_rev = exec_lines[seed % len(exec_lines)]
     else:
         exec_rev = "ยังไม่มีดีลปิดให้รีวิวคุณภาพการเข้า/ออก"
 

@@ -1,3 +1,5 @@
+import json
+import time
 import uuid
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,6 +24,18 @@ from app.trading.service import (
 )
 
 router = APIRouter(prefix="/trading", tags=["trading"])
+
+# Desk opportunities are expensive (MTF analysis + backtest per symbol). The
+# /office desk polls every ~15s for moving prices, but the underlying setups
+# barely change minute-to-minute — cache opps per (workspace, watchlist) so we
+# don't re-run the full scan on every poll. Live prices stay fresh (fetched
+# separately each request).
+_DESK_OPPS_TTL = 60.0  # seconds
+_desk_opps_cache: dict[str, tuple[float, list[dict]]] = {}
+
+
+def _desk_opps_key(workspace_id: uuid.UUID, items: list[dict]) -> str:
+    return f"{workspace_id}:" + json.dumps(items, sort_keys=True, default=str)
 
 
 # ── reference data ──────────────────────────────────────────────
@@ -277,7 +291,18 @@ async def trading_desk(
         {"symbol": w.symbol, "cfg": (w.strategies[0] if w.strategies else None)}
         for w in res.scalars().all()
     ]
-    opps = await daily_opportunities(items) if items else []
+    # cached opps (expensive scan) — refreshed at most once per _DESK_OPPS_TTL
+    if items:
+        key = _desk_opps_key(workspace_id, items)
+        cached = _desk_opps_cache.get(key)
+        now = time.monotonic()
+        if cached and now - cached[0] < _DESK_OPPS_TTL:
+            opps = cached[1]
+        else:
+            opps = await daily_opportunities(items)
+            _desk_opps_cache[key] = (now, opps)
+    else:
+        opps = []
 
     # live prices (one ticker call → all markets) for fresh, moving numbers
     from app.trading.bitkub import to_market_symbol

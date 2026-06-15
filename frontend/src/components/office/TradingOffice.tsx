@@ -59,6 +59,7 @@ export default function TradingOffice({ officeName }: Props) {
   const [chars, setChars] = useState<DeskChar[]>([]);
   const [updated, setUpdated] = useState<Date | null>(null);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   // edit mode
   const [editMode, setEditMode] = useState(false);
@@ -82,7 +83,10 @@ export default function TradingOffice({ officeName }: Props) {
       const r = await api.get(`/trading/desk/workspace/${current.id}`);
       setChars(r.data.characters ?? []);
       setUpdated(new Date());
-    } catch { /* ignore */ } finally { setLoading(false); }
+      setError(null);
+    } catch {
+      setError("โหลดข้อมูลโต๊ะเทรดไม่ได้ — ลองรีเฟรช");
+    } finally { setLoading(false); }
   }, [current]);
 
   useEffect(() => { load(); }, [load]);
@@ -201,6 +205,11 @@ export default function TradingOffice({ officeName }: Props) {
         <span className="rounded-full bg-accent-500/20 px-2 py-0.5 text-[10px] font-semibold text-accent-300">
           🏢 Trading Floor · live
         </span>
+        {!editMode && error && (
+          <span className="rounded-full bg-red-500/20 px-2 py-0.5 text-[10px] font-semibold text-red-300">
+            ⚠️ {error}
+          </span>
+        )}
         <div className="ml-auto flex items-center gap-2 text-[11px] text-white/40">
           {!editMode && loading && <RefreshCw size={12} className="animate-spin" />}
           {!editMode && updated && <span className="hidden sm:inline">{updated.toLocaleTimeString()}</span>}
