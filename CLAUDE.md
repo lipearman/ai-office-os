@@ -18,6 +18,14 @@ cd frontend
 npm run dev                     # Next 15 + Turbopack
 ```
 
+**Trading-desk worker** (optional — computes the /office desk 24/7):
+```bash
+# runs in-process with the API by default (RUN_WORKER_IN_PROCESS=true).
+# to run it as a dedicated process instead, set RUN_WORKER_IN_PROCESS=false then:
+cd backend && .venv\Scripts\python.exe -m app.trading.worker
+```
+Needs Redis (`REDIS_URL`, default :6379) for realtime push to the browser.
+
 **Test login:** `admin@example.com` / `Admin1234!` (login page has a one-click "Test Account" button).
 **Seed demo data:** `cd backend && .venv\Scripts\python.exe seed_demo.py` (idempotent).
 
@@ -28,7 +36,8 @@ npm run dev                     # Next 15 + Turbopack
 ## Stack
 - **Frontend:** Next 15 (App Router), TypeScript, Tailwind, Zustand (persist), React Flow (workflows), **Phaser 3** (the /office 2D game — chosen over Three.js/custom-canvas).
 - **Backend:** FastAPI, SQLAlchemy async, Alembic, LangGraph + LangChain, JWT, **bcrypt 4.2.1 directly** (passlib removed — incompatible with bcrypt 5).
-- **DB:** PostgreSQL 16 (`aioffice` / `aioffice_secret` / `aioffice_db` :5432). Embeddings stored as **JSON** (no pgvector). LLM auto-detect: OpenAI → Gemini → OpenRouter → Ollama → deterministic fallback (runs end-to-end with no API key).
+- **DB:** PostgreSQL 16 (`aioffice` / `aioffice_secret` / `aioffice_db` :5432). Embeddings stored as **JSON** (no pgvector).
+- **LLM:** per-agent provider via a registry in `backend/app/agents/llm.py` (`get_llm(provider, model)`). Providers: `openai`, `anthropic`, `gemini`, `openrouter`, `ollama` — add one = a `_build_<name>` fn + an entry in `_BUILDERS`/`_DEFAULT_MODEL`. `provider="auto"` (or unset) → `DEFAULT_LLM_PROVIDER` (**Ollama** at `OLLAMA_BASE_URL`, default `http://llm-server:11434`, model `qwen2.5:7b-instruct`); a provider with no key falls back to the default, then to a stub (runs with no cloud key). Each Agent row carries `model_provider`/`model_name` (editable in `/agents`).
 
 ## Conventions (important)
 - **DB enum values are UPPERCASE** (e.g. `MEMBER`, `IDLE`, `USER`, `ACTIVE`, `SUCCESS`). Models must match.
@@ -44,6 +53,14 @@ Phaser "Create"-inspired: dark gradient (blue→teal→green) wallpaper, floatin
 - `components/phaser/PhaserOffice.tsx` — React bridge. Boots Phaser **once** (never recreate — keeps agents alive); applies asset/settings changes live.
 - `store/officeGame.ts` — persisted config (`office-game-config-v7`): background, furniture, catalog, agentSprites, **settings** (charScale, walkSpeed, showLabels, collision). `partialize` skips `blob:` URLs.
 - Editor (`แก้ไข Office` button) is a Phaser-style tabbed panel: ฉากหลัง / ตัวละคร / เฟอร์นิเจอร์ / ตั้งค่า.
+
+## Trading desk (worker-driven)
+`/office` is a **Trading Floor**: 7 character roles (trader, analyst, news, risk, coach, monitor, exec) that speak from real trading data. **The web only displays — a background worker computes.**
+- `app/trading/scheduler.py` — APScheduler, 2-tier: **heavy tick** (3 min) runs full analysis + news + stats → `build_desk()` → upserts `desk_snapshots`, detects `trading_alerts`; **fast tick** (20 s) refreshes prices / unrealized PnL only.
+- `app/trading/desk_store.py` — `compute_full` / `refresh_prices` / `get_snapshot`. `build_desk()` (in `service.py`) is **deterministic** (the source of truth); `app/trading/desk_llm.py` adds optional LLM "color commentary" on top (heavy tick only, best-effort, falls back to deterministic). Per-role provider via `desk_llm_configs` (set in the `⚙️ LLM` panel of the desk editor).
+- `GET /trading/desk/workspace/{id}` is **read-only** (returns the latest snapshot; `status: warming_up` until the first tick). Alerts live in `trading_alerts` (durable, not in-memory).
+- **Realtime:** the worker publishes each update to the Redis `desk-updates` channel; `app/trading/realtime.py` (in the API process) rebroadcasts as a `desk.update` WS event. `TradingOffice.tsx` listens via `wsManager`; the 15 s poll is a fallback.
+- Frontend desk: `components/office/TradingOffice.tsx` (scene render, streaming bubbles, edit mode, per-role LLM panel).
 
 ## Layout notes
 - Dashboard pages: wrap content in `animate-fade-in mx-auto w-full max-w-6xl` (grids) or narrower + `mx-auto` (forms) — centered, not left-glued.
