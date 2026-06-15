@@ -19,11 +19,14 @@ log = structlog.get_logger()
 async def lifespan(app: FastAPI):
     log.info("Starting AI Office OS", version=settings.VERSION)
     await init_db()
-    try:
-        from app.trading.scheduler import start_scheduler
-        start_scheduler()
-    except Exception as e:
-        log.warning("scheduler_start_failed", error=str(e))
+    if settings.RUN_WORKER_IN_PROCESS:
+        try:
+            from app.trading.scheduler import start_scheduler
+            start_scheduler()
+        except Exception as e:
+            log.warning("scheduler_start_failed", error=str(e))
+    # the WS bridge always runs in the API process (it holds the WS connections);
+    # a separate worker just publishes to Redis and this rebroadcasts.
     try:
         from app.trading.realtime import start_realtime
         start_realtime()
@@ -35,11 +38,12 @@ async def lifespan(app: FastAPI):
         await stop_realtime()
     except Exception:
         pass
-    try:
-        from app.trading.scheduler import stop_scheduler
-        stop_scheduler()
-    except Exception:
-        pass
+    if settings.RUN_WORKER_IN_PROCESS:
+        try:
+            from app.trading.scheduler import stop_scheduler
+            stop_scheduler()
+        except Exception:
+            pass
     await close_redis()
     log.info("Shutdown complete")
 

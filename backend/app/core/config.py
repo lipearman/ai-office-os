@@ -35,6 +35,10 @@ class Settings(BaseSettings):
     # kill-switch for LLM 'color commentary' on the trading desk (worker calls
     # the LLM on each heavy tick when a provider is configured)
     DESK_LLM_ENABLED: bool = True
+    # run the desk worker (APScheduler) inside the API process. Set False when
+    # running a dedicated worker (`python -m app.trading.worker`) so the ticks
+    # don't run twice.
+    RUN_WORKER_IN_PROCESS: bool = True
 
     # CORS
     ALLOWED_ORIGINS: list[str] = [
