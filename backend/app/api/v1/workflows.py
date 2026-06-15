@@ -180,6 +180,8 @@ async def _run_agent_node(node: dict, context: dict, db: AsyncSession) -> dict:
         agent_name=agent.name if agent else "AI",
         workspace_id=str(agent.workspace_id) if agent else "",
         user_id="", conversation_id="", history=[],
+        model_provider=agent.model_provider if agent else "auto",
+        model_name=agent.model_name if agent else "auto",
     )
     return {"output": reply}
 

@@ -9,6 +9,8 @@ class AgentState(TypedDict):
     agent_type: str
     agent_id: str
     agent_name: str
+    model_provider: str       # per-agent LLM provider ("auto" → default)
+    model_name: str           # per-agent LLM model ("auto" → provider default)
     user_id: str
     conversation_id: str
     current_agent: str        # which agent is currently active

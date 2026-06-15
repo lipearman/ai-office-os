@@ -26,7 +26,11 @@ class Settings(BaseSettings):
     GEMINI_API_KEY: str = ""
     OPENROUTER_API_KEY: str = ""
     OPENROUTER_MODEL: str = ""   # e.g. "meta-llama/llama-3.1-8b-instruct" — override the default OpenRouter model
-    OLLAMA_BASE_URL: str = "http://localhost:11434"
+    OLLAMA_BASE_URL: str = "http://llm-server:11434"
+    # default LLM when an agent doesn't specify one (provider == auto/empty).
+    # Self-hosted Ollama by default so the app needs no cloud API key.
+    DEFAULT_LLM_PROVIDER: str = "ollama"
+    DEFAULT_LLM_MODEL: str = "qwen2.5:7b-instruct"
     # kill-switch for LLM 'color commentary' on the trading desk (worker calls
     # the LLM on each heavy tick when a provider is configured)
     DESK_LLM_ENABLED: bool = True

@@ -43,7 +43,7 @@ async def _run_agent(agent_type: str, state: AgentState) -> AgentState:
     tools = TOOLS_BY_AGENT.get(agent_type, [])
 
     try:
-        llm = get_llm()
+        llm = get_llm(state.get("model_provider", "auto"), state.get("model_name", "auto"))
         llm_with_tools = llm.bind_tools(tools) if tools else llm
         messages = [SystemMessage(content=system_prompt)] + list(state["messages"])
         resp = await llm_with_tools.ainvoke(messages)

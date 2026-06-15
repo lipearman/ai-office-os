@@ -22,8 +22,8 @@ class Agent(Base, UUIDMixin, TimestampMixin):
     agent_type: Mapped[str] = mapped_column(String(50), nullable=False)  # reception, pm, ba, dev, dba, qa, rag
     description: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     system_prompt: Mapped[str] = mapped_column(Text, nullable=False)
-    model_provider: Mapped[str] = mapped_column(String(50), default="openai")
-    model_name: Mapped[str] = mapped_column(String(100), default="gpt-4o-mini")
+    model_provider: Mapped[str] = mapped_column(String(50), default="auto")  # auto → settings.DEFAULT_LLM_PROVIDER
+    model_name: Mapped[str] = mapped_column(String(100), default="auto")      # auto → provider default
     avatar_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     status: Mapped[AgentStatus] = mapped_column(SAEnum(AgentStatus), default=AgentStatus.IDLE)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
