@@ -5,14 +5,9 @@ import dynamic from "next/dynamic";
 import { useWorkspaceStore } from "@/store/workspace";
 import { useOfficeStore } from "@/store/office";
 
-const OfficeView = dynamic(
-  () => import("@/components/office/StaticOffice"),
+const TradingOffice = dynamic(
+  () => import("@/components/office/TradingOffice"),
   { ssr: false, loading: () => <LoadingScreen /> }
-);
-
-const TradingDesk = dynamic(
-  () => import("@/components/office/TradingDesk"),
-  { ssr: false }
 );
 
 function LoadingScreen() {
@@ -31,7 +26,7 @@ function LoadingScreen() {
 
 export default function OfficePage() {
   const { current, loading: wsLoading } = useWorkspaceStore();
-  const { fetchOffice, fetchAgents, loading, office, agents } = useOfficeStore();
+  const { fetchOffice, fetchAgents, loading, office } = useOfficeStore();
   const [initialized, setInitialized] = useState(false);
 
   useEffect(() => {
@@ -52,10 +47,7 @@ export default function OfficePage() {
   return (
     <div className="absolute inset-0 overflow-hidden">
       {isLoading ? <LoadingScreen /> : office ? (
-        <>
-          <OfficeView agents={agents} officeName={office.name} />
-          <TradingDesk />
-        </>
+        <TradingOffice officeName={office.name} />
       ) : (
         <div className="flex h-full items-center justify-center">
           <p className="text-white">ยังไม่มี Office</p>
