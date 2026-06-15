@@ -80,6 +80,7 @@ export default function TradingOffice({ officeName }: Props) {
   const [llmConfig, setLlmConfig] = useState<Record<string, { provider?: string; model?: string }>>({});
   const [showLlm, setShowLlm] = useState(false);
   const [llmSaving, setLlmSaving] = useState(false);
+  const [llmOpts, setLlmOpts] = useState<{ providers: string[]; models: Record<string, string[]> }>({ providers: ["auto"], models: {} });
 
   useEffect(() => { if (current) fetchTemplates(current.id); }, [current, fetchTemplates]);
   useEffect(() => {
@@ -88,6 +89,7 @@ export default function TradingOffice({ officeName }: Props) {
       .then((r) => setLlmConfig(r.data.roles ?? {}))
       .catch(() => {});
   }, [current]);
+  useEffect(() => { api.get(`/agents/llm/options`).then((r) => setLlmOpts(r.data)).catch(() => {}); }, []);
 
   const saveLlmConfig = async () => {
     if (!current) return;
@@ -411,10 +413,16 @@ export default function TradingOffice({ officeName }: Props) {
                       {c?.emoji ?? "🙂"} {c?.name ?? key}
                     </span>
                     <div className="flex gap-1.5">
-                      <input value={conf.provider ?? ""} onChange={(e) => set({ provider: e.target.value })}
-                        placeholder="provider" className="w-1/2 rounded border border-white/10 bg-white/5 px-2 py-1 text-[11px] text-white placeholder-white/25 focus:border-accent-500/50 focus:outline-none" />
-                      <input value={conf.model ?? ""} onChange={(e) => set({ model: e.target.value })}
+                      <select value={conf.provider ?? ""} onChange={(e) => set({ provider: e.target.value })}
+                        className="w-1/2 rounded border border-white/10 bg-white/5 px-2 py-1 text-[11px] text-white focus:border-accent-500/50 focus:outline-none">
+                        <option value="">default</option>
+                        {llmOpts.providers.filter((p) => p !== "auto").map((p) => <option key={p} value={p} className="bg-gray-900">{p}</option>)}
+                      </select>
+                      <input list={`models-${key}`} value={conf.model ?? ""} onChange={(e) => set({ model: e.target.value })}
                         placeholder="model" className="w-1/2 rounded border border-white/10 bg-white/5 px-2 py-1 text-[11px] text-white placeholder-white/25 focus:border-accent-500/50 focus:outline-none" />
+                      <datalist id={`models-${key}`}>
+                        {(llmOpts.models[conf.provider ?? ""] ?? []).map((m) => <option key={m} value={m} />)}
+                      </datalist>
                     </div>
                   </div>
                 );

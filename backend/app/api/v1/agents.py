@@ -11,6 +11,13 @@ from app.api.deps import get_current_user
 router = APIRouter(prefix="/agents", tags=["agents"])
 
 
+@router.get("/llm/options")
+async def llm_options(current_user: User = Depends(get_current_user)):
+    """Available LLM providers + model choices (Ollama fetched live) for dropdowns."""
+    from app.agents.llm import llm_options as _opts
+    return await _opts()
+
+
 @router.get("/workspace/{workspace_id}", response_model=list[AgentOut])
 async def list_agents(
     workspace_id: uuid.UUID,

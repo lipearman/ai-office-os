@@ -19,9 +19,11 @@ export default function AgentsPage() {
   const { current } = useWorkspaceStore();
   const [agents, setAgents] = useState<any[]>([]);
   const [editing, setEditing] = useState<any>(null);
+  const [llmOpts, setLlmOpts] = useState<{ providers: string[]; models: Record<string, string[]> }>({ providers: ["auto"], models: {} });
 
   const load = () => { if (current) api.get(`/agents/workspace/${current.id}`).then(r => setAgents(r.data)).catch(()=>{}); };
   useEffect(() => { load(); }, [current]);
+  useEffect(() => { api.get(`/agents/llm/options`).then(r => setLlmOpts(r.data)).catch(()=>{}); }, []);
 
   const save = async () => {
     if (!current || !editing) return;
@@ -89,8 +91,18 @@ export default function AgentsPage() {
               <Field label="คำอธิบาย"><input value={editing.description ?? ""} onChange={(e)=>setEditing({...editing,description:e.target.value})} className={inp}/></Field>
               <Field label="System Prompt"><textarea rows={5} value={editing.system_prompt ?? ""} onChange={(e)=>setEditing({...editing,system_prompt:e.target.value})} className={`${inp} resize-none`}/></Field>
               <div className="grid grid-cols-2 gap-3">
-                <Field label="Provider"><input value={editing.model_provider ?? ""} onChange={(e)=>setEditing({...editing,model_provider:e.target.value})} placeholder="auto/openai/ollama" className={inp}/></Field>
-                <Field label="Model"><input value={editing.model_name ?? ""} onChange={(e)=>setEditing({...editing,model_name:e.target.value})} placeholder="auto/gpt-4o-mini" className={inp}/></Field>
+                <Field label="Provider">
+                  <select value={editing.model_provider ?? "auto"} onChange={(e)=>setEditing({...editing,model_provider:e.target.value})} className={inp}>
+                    {llmOpts.providers.map((p)=><option key={p} value={p}>{p}</option>)}
+                  </select>
+                </Field>
+                <Field label="Model">
+                  <input list="agent-models" value={editing.model_name ?? ""} onChange={(e)=>setEditing({...editing,model_name:e.target.value})} placeholder="auto" className={inp}/>
+                  <datalist id="agent-models">
+                    <option value="auto" />
+                    {(llmOpts.models[editing.model_provider] ?? []).map((m)=><option key={m} value={m} />)}
+                  </datalist>
+                </Field>
               </div>
             </div>
             <Button onClick={save} className="w-full mt-5 gap-1.5"><Save size={14}/> บันทึก</Button>

@@ -113,6 +113,43 @@ def get_llm(provider: str = "auto", model: str = "auto") -> BaseChatModel:
     return _FallbackLLM()
 
 
+# ── discovery (for UI dropdowns) ─────────────────────────────────
+# curated model suggestions per cloud provider (Ollama is fetched live)
+_SUGGESTED_MODELS: dict[str, list[str]] = {
+    "openai": ["gpt-4o-mini", "gpt-4o"],
+    "anthropic": ["claude-sonnet-4-6", "claude-haiku-4-5-20251001", "claude-opus-4-8"],
+    "gemini": ["gemini-1.5-flash", "gemini-1.5-pro"],
+    "openrouter": [],
+}
+
+
+def available_providers() -> list[str]:
+    return ["auto"] + list(_BUILDERS.keys())
+
+
+async def list_ollama_models() -> list[str]:
+    """Live model list from the configured Ollama server (empty on failure)."""
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=4.0) as client:
+            r = await client.get(f"{settings.OLLAMA_BASE_URL}/api/tags")
+            r.raise_for_status()
+            return sorted(m["name"] for m in r.json().get("models", []) if m.get("name"))
+    except Exception:
+        return []
+
+
+async def llm_options() -> dict:
+    """Providers + model choices for UI dropdowns."""
+    models = dict(_SUGGESTED_MODELS)
+    models["ollama"] = await list_ollama_models() or [_DEFAULT_MODEL["ollama"]]
+    return {
+        "providers": available_providers(),
+        "default_provider": settings.DEFAULT_LLM_PROVIDER,
+        "models": models,
+    }
+
+
 class _FallbackLLM(BaseChatModel):
     """Stub LLM when no provider is configured."""
 
