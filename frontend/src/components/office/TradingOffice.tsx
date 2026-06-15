@@ -81,6 +81,7 @@ export default function TradingOffice({ officeName }: Props) {
   const [showLlm, setShowLlm] = useState(false);
   const [llmSaving, setLlmSaving] = useState(false);
   const [llmOpts, setLlmOpts] = useState<{ providers: string[]; models: Record<string, string[]> }>({ providers: ["auto"], models: {} });
+  const [bulk, setBulk] = useState<{ provider: string; model: string }>({ provider: "", model: "" });
 
   useEffect(() => { if (current) fetchTemplates(current.id); }, [current, fetchTemplates]);
   useEffect(() => {
@@ -400,30 +401,58 @@ export default function TradingOffice({ officeName }: Props) {
                 {llmSaving ? "บันทึก…" : "บันทึก LLM"}
               </button>
             </div>
-            <p className="mb-2 text-[10px] leading-snug text-white/40">เว้นว่าง = ใช้ default ({"ollama · qwen2.5:7b-instruct"})</p>
+            <p className="mb-2 text-[10px] leading-snug text-white/40">เว้นว่าง = ใช้ default (ollama · qwen2.5:7b-instruct)</p>
+
+            {/* preset: apply one provider/model to all roles */}
+            <div className="mb-2 rounded-lg border border-accent-500/20 bg-accent-500/5 p-2">
+              <span className="mb-1 block text-[10px] font-semibold text-accent-300">ตั้งทุก agent พร้อมกัน</span>
+              <div className="flex gap-1.5">
+                <select value={bulk.provider} onChange={(e) => setBulk({ provider: e.target.value, model: "" })}
+                  className="w-1/2 rounded border border-white/10 bg-white/5 px-2 py-1 text-[11px] text-white focus:border-accent-500/50 focus:outline-none">
+                  <option value="">default</option>
+                  {llmOpts.providers.filter((p) => p !== "auto").map((p) => <option key={p} value={p} className="bg-gray-900">{p}</option>)}
+                </select>
+                <input list="models-bulk" value={bulk.model} onChange={(e) => setBulk({ ...bulk, model: e.target.value })}
+                  placeholder="model" className="w-1/2 rounded border border-white/10 bg-white/5 px-2 py-1 text-[11px] text-white placeholder-white/25 focus:border-accent-500/50 focus:outline-none" />
+                <datalist id="models-bulk">{(llmOpts.models[bulk.provider] ?? []).map((m) => <option key={m} value={m} />)}</datalist>
+              </div>
+              <button
+                onClick={() => setLlmConfig(Object.fromEntries(ORDER.map((k) => [k, { provider: bulk.provider, model: bulk.model }])))}
+                className="mt-1.5 w-full rounded border border-white/15 py-1 text-[10px] text-white/70 hover:bg-white/10">
+                ใช้กับทุก agent
+              </button>
+            </div>
+
             <div className="space-y-2">
               {ORDER.map((key) => {
                 const c = charByKey(key);
                 const conf = llmConfig[key] ?? {};
                 const set = (patch: { provider?: string; model?: string }) =>
                   setLlmConfig((m) => ({ ...m, [key]: { ...m[key], ...patch } }));
+                const known = llmOpts.models[conf.provider ?? ""] ?? [];
+                // validation: model typed but not present on the server's known list
+                const modelUnknown = !!conf.model?.trim() && known.length > 0 && !known.includes(conf.model.trim());
+                const hasOverride = !!(conf.provider?.trim() || conf.model?.trim());
                 return (
                   <div key={key} className="rounded-lg border border-white/10 p-2">
                     <span className="mb-1 flex items-center gap-1 text-[11px] font-semibold" style={{ color: COLORS[key] ?? "#a78bfa" }}>
                       {c?.emoji ?? "🙂"} {c?.name ?? key}
+                      {hasOverride && (
+                        <button onClick={() => set({ provider: "", model: "" })} className="ml-auto text-white/30 hover:text-white/70" title="คืนค่า default">✕</button>
+                      )}
                     </span>
                     <div className="flex gap-1.5">
-                      <select value={conf.provider ?? ""} onChange={(e) => set({ provider: e.target.value })}
+                      <select value={conf.provider ?? ""} onChange={(e) => set({ provider: e.target.value, model: "" })}
                         className="w-1/2 rounded border border-white/10 bg-white/5 px-2 py-1 text-[11px] text-white focus:border-accent-500/50 focus:outline-none">
                         <option value="">default</option>
                         {llmOpts.providers.filter((p) => p !== "auto").map((p) => <option key={p} value={p} className="bg-gray-900">{p}</option>)}
                       </select>
                       <input list={`models-${key}`} value={conf.model ?? ""} onChange={(e) => set({ model: e.target.value })}
-                        placeholder="model" className="w-1/2 rounded border border-white/10 bg-white/5 px-2 py-1 text-[11px] text-white placeholder-white/25 focus:border-accent-500/50 focus:outline-none" />
-                      <datalist id={`models-${key}`}>
-                        {(llmOpts.models[conf.provider ?? ""] ?? []).map((m) => <option key={m} value={m} />)}
-                      </datalist>
+                        placeholder="model" className={`w-1/2 rounded border bg-white/5 px-2 py-1 text-[11px] text-white placeholder-white/25 focus:outline-none ${modelUnknown ? "border-amber-500/60" : "border-white/10 focus:border-accent-500/50"}`} />
+                      <datalist id={`models-${key}`}>{known.map((m) => <option key={m} value={m} />)}</datalist>
                     </div>
+                    {modelUnknown && <span className="mt-0.5 block text-[9px] text-amber-400/80">⚠ ไม่พบ model นี้บน server</span>}
+                    {conf.provider?.trim() && !conf.model?.trim() && <span className="mt-0.5 block text-[9px] text-white/35">ใช้ model เริ่มต้นของ {conf.provider}</span>}
                   </div>
                 );
               })}
