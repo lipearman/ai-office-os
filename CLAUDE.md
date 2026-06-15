@@ -31,6 +31,7 @@ Needs Redis (`REDIS_URL`, default :6379) for realtime push to the browser.
 
 ## Checks
 - Frontend types: `cd frontend && npm run type-check` (3 *pre-existing* errors are known & harmless: ChatPanel SYSTEM compare, legacy `components/office/OfficeScene.tsx` drei Fog, PhaserOffice `online` status compare).
+- Backend unit tests: `cd backend && .venv\Scripts\python.exe -m pytest -q` (pure functions — LLM resolver, desk LLM parse/grouping, deterministic `build_desk`; no DB/network needed).
 - E2E smoke (backend must run): `pwsh tools/e2e_test.ps1` — 16 checks.
 
 ## Stack
