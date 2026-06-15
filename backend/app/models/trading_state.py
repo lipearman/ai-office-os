@@ -31,6 +31,21 @@ class DeskSnapshot(Base, UUIDMixin, TimestampMixin):
     priced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class DeskLLMConfig(Base, UUIDMixin, TimestampMixin):
+    """Per-workspace, per-role LLM provider/model for the trading desk.
+
+    `roles` = {role_key: {"provider": "...", "model": "..."}}. Roles not listed
+    (or set to "auto") use the global default provider. Lets each of the 7 desk
+    characters speak via a different LLM.
+    """
+    __tablename__ = "desk_llm_configs"
+
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id"), nullable=False, unique=True, index=True
+    )
+    roles: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
 class TradingAlert(Base, UUIDMixin, TimestampMixin):
     """A 'new setup' alert detected by the worker (durable, replaces in-memory)."""
     __tablename__ = "trading_alerts"

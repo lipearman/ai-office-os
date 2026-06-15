@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.watchlist import WatchlistItem
 from app.models.paper import PaperTrade
-from app.models.trading_state import DeskSnapshot, TradingAlert
+from app.models.trading_state import DeskSnapshot, TradingAlert, DeskLLMConfig
 from app.trading.service import daily_opportunities, build_desk
 from app.trading.paper import unrealized, paper_stats
 from app.trading.news import fetch_news, aggregate_sentiment
@@ -106,14 +106,26 @@ async def compute_full(db: AsyncSession, workspace_id) -> DeskSnapshot:
 
     snap = await get_snapshot(db, workspace_id)
 
-    # LLM 'color commentary' — only re-generate when the factual lines changed
-    # (saves tokens; heavy tick runs every few minutes regardless).
+    # per-role LLM provider/model overrides (if configured)
+    cfg_res = await db.execute(
+        select(DeskLLMConfig).where(DeskLLMConfig.workspace_id == workspace_id)
+    )
+    cfg = cfg_res.scalar_one_or_none()
+    role_overrides = (cfg.roles if cfg else None) or {}
+
+    # LLM 'color commentary' — only re-generate when the factual lines OR the
+    # per-role provider config changed (saves tokens; heavy tick runs anyway).
     fact_lines = {c["key"]: c["message"] for c in characters}
-    prev_facts = (snap.meta or {}).get("fact_lines") if snap else None
-    if fact_lines == prev_facts and snap:
+    prev_meta = snap.meta or {} if snap else {}
+    unchanged = (
+        snap is not None
+        and fact_lines == prev_meta.get("fact_lines")
+        and role_overrides == prev_meta.get("role_overrides")
+    )
+    if unchanged:
         commentary = {c.get("key"): c.get("commentary") for c in (snap.characters or [])}
     else:
-        commentary = await desk_llm.enrich_commentary(characters)
+        commentary = await desk_llm.enrich_commentary(characters, role_overrides)
     for c in characters:
         cm = commentary.get(c["key"])
         if cm:
@@ -136,7 +148,7 @@ async def compute_full(db: AsyncSession, workspace_id) -> DeskSnapshot:
 
     # stash analysis so the cheap price-only tick can rebuild without re-scanning
     meta = {"opps": opps, "stats": stats, "news_agg": news_agg, "prices": prices,
-            "fact_lines": fact_lines}
+            "fact_lines": fact_lines, "role_overrides": role_overrides}
     now = datetime.now(timezone.utc)
     if snap is None:
         snap = DeskSnapshot(workspace_id=workspace_id)

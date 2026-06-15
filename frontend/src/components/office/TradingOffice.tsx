@@ -75,7 +75,34 @@ export default function TradingOffice({ officeName }: Props) {
   const [bubbles, setBubbles] = useState<Record<string, Bubble>>({});
   const lastSpoken = useRef<Record<string, string>>({});  // last message streamed per char
 
+  // per-role LLM provider/model config (edit mode panel)
+  const [llmConfig, setLlmConfig] = useState<Record<string, { provider?: string; model?: string }>>({});
+  const [showLlm, setShowLlm] = useState(false);
+  const [llmSaving, setLlmSaving] = useState(false);
+
   useEffect(() => { if (current) fetchTemplates(current.id); }, [current, fetchTemplates]);
+  useEffect(() => {
+    if (!current) return;
+    api.get(`/trading/desk/llm-config/workspace/${current.id}`)
+      .then((r) => setLlmConfig(r.data.roles ?? {}))
+      .catch(() => {});
+  }, [current]);
+
+  const saveLlmConfig = async () => {
+    if (!current) return;
+    setLlmSaving(true);
+    try {
+      // drop empty entries so unset roles fall back to the default provider
+      const roles: Record<string, { provider?: string; model?: string }> = {};
+      for (const k of ORDER) {
+        const c = llmConfig[k];
+        if (c && (c.provider?.trim() || c.model?.trim())) roles[k] = c;
+      }
+      await api.put(`/trading/desk/llm-config/workspace/${current.id}`, { roles });
+      setLlmConfig(roles);
+      setShowLlm(false);
+    } finally { setLlmSaving(false); }
+  };
   useEffect(() => { if (!editMode) setPositions(loadPositions(activeTemplate?.markers)); }, [activeTemplate, editMode]);
 
   const load = useCallback(async () => {
@@ -237,7 +264,8 @@ export default function TradingOffice({ officeName }: Props) {
                 อัปโหลดฉาก
                 <input type="file" accept="image/*" className="hidden" onChange={(e) => e.target.files?.[0] && onUpload(e.target.files[0])} />
               </label>
-              <button onClick={() => { setEditMode(false); setSelected(null); }} className="rounded-md border border-white/15 px-2 py-1 text-white/70 hover:bg-white/10">ยกเลิก</button>
+              <button onClick={() => setShowLlm((s) => !s)} className={`rounded-md border px-2 py-1 ${showLlm ? "border-accent-400 text-accent-300" : "border-white/15 text-white/70"} hover:bg-white/10`}>⚙️ LLM</button>
+              <button onClick={() => { setEditMode(false); setSelected(null); setShowLlm(false); }} className="rounded-md border border-white/15 px-2 py-1 text-white/70 hover:bg-white/10">ยกเลิก</button>
               <button onClick={saveEdit} disabled={saving} className="rounded-md bg-accent-500 px-3 py-1 font-semibold text-black hover:bg-accent-400 disabled:opacity-50">
                 {saving ? "กำลังบันทึก…" : "บันทึก"}
               </button>
@@ -340,6 +368,42 @@ export default function TradingOffice({ officeName }: Props) {
             <input type="range" min={0.6} max={1.8} step={0.1} value={positions[selected]?.scale ?? 1}
               onChange={(e) => setPositions((p) => ({ ...p, [selected]: { ...p[selected], scale: parseFloat(e.target.value) } }))}
               className="w-40 accent-primary-500" />
+          </div>
+        )}
+
+        {/* per-role LLM provider/model panel (edit) */}
+        {editMode && showLlm && (
+          <div className="absolute right-3 top-3 max-h-[80%] w-[320px] overflow-auto rounded-xl border border-white/15 bg-black/80 p-3 backdrop-blur"
+            onClick={(e) => e.stopPropagation()}>
+            <div className="mb-2 flex items-center justify-between">
+              <span className="text-xs font-semibold text-white">LLM ราย agent</span>
+              <button onClick={saveLlmConfig} disabled={llmSaving}
+                className="rounded-md bg-accent-500 px-2 py-0.5 text-[11px] font-semibold text-black hover:bg-accent-400 disabled:opacity-50">
+                {llmSaving ? "บันทึก…" : "บันทึก LLM"}
+              </button>
+            </div>
+            <p className="mb-2 text-[10px] leading-snug text-white/40">เว้นว่าง = ใช้ default ({"ollama · qwen2.5:7b-instruct"})</p>
+            <div className="space-y-2">
+              {ORDER.map((key) => {
+                const c = charByKey(key);
+                const conf = llmConfig[key] ?? {};
+                const set = (patch: { provider?: string; model?: string }) =>
+                  setLlmConfig((m) => ({ ...m, [key]: { ...m[key], ...patch } }));
+                return (
+                  <div key={key} className="rounded-lg border border-white/10 p-2">
+                    <span className="mb-1 flex items-center gap-1 text-[11px] font-semibold" style={{ color: COLORS[key] ?? "#a78bfa" }}>
+                      {c?.emoji ?? "🙂"} {c?.name ?? key}
+                    </span>
+                    <div className="flex gap-1.5">
+                      <input value={conf.provider ?? ""} onChange={(e) => set({ provider: e.target.value })}
+                        placeholder="provider" className="w-1/2 rounded border border-white/10 bg-white/5 px-2 py-1 text-[11px] text-white placeholder-white/25 focus:border-accent-500/50 focus:outline-none" />
+                      <input value={conf.model ?? ""} onChange={(e) => set({ model: e.target.value })}
+                        placeholder="model" className="w-1/2 rounded border border-white/10 bg-white/5 px-2 py-1 text-[11px] text-white placeholder-white/25 focus:border-accent-500/50 focus:outline-none" />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
           </div>
         )}
       </div>

@@ -36,12 +36,12 @@ Execution Reviewer).
 - ไม่ต้องมีคำอธิบายอื่นนอก JSON"""
 
 
-def llm_available() -> bool:
+def llm_available(provider: str = "auto", model: str = "auto") -> bool:
     """True only when a real LLM provider is configured (not the fallback stub)."""
     if not settings.DESK_LLM_ENABLED:
         return False
     try:
-        return not isinstance(get_llm(), _FallbackLLM)
+        return not isinstance(get_llm(provider, model), _FallbackLLM)
     except Exception:
         return False
 
@@ -64,9 +64,9 @@ def _parse_json_object(text: str) -> dict:
         return {}
 
 
-async def enrich_commentary(characters: list[dict]) -> dict[str, str]:
-    """Return {role_key: in-character remark}. Best-effort; {} on any problem."""
-    if not characters or not llm_available():
+async def _one_call(characters: list[dict], provider: str, model: str) -> dict[str, str]:
+    """One batched LLM call for a set of characters sharing a provider/model."""
+    if not characters or not llm_available(provider, model):
         return {}
     facts = {
         c["key"]: {"name": c.get("name"), "role": c.get("role"), "fact": c.get("message")}
@@ -76,17 +76,45 @@ async def enrich_commentary(characters: list[dict]) -> dict[str, str]:
         facts, ensure_ascii=False
     )
     try:
-        llm = get_llm()
+        llm = get_llm(provider, model)
         resp = await llm.ainvoke(
             [SystemMessage(content=_SYSTEM), HumanMessage(content=user)]
         )
         content = resp.content if isinstance(resp.content, str) else str(resp.content)
         data = _parse_json_object(content)
+        # keep only the roles we asked about (the model sometimes adds others)
+        wanted = {c["key"] for c in characters}
         return {
             k: str(v)[:120]
             for k, v in data.items()
-            if isinstance(v, str) and v.strip()
+            if k in wanted and isinstance(v, str) and v.strip()
         }
     except Exception as e:
-        log.warning("desk_llm_failed", error=str(e))
+        log.warning("desk_llm_failed", provider=provider, model=model, error=str(e))
         return {}
+
+
+async def enrich_commentary(
+    characters: list[dict], role_overrides: dict | None = None
+) -> dict[str, str]:
+    """Return {role_key: in-character remark}. Best-effort; {} on any problem.
+
+    `role_overrides` = {role_key: {"provider": ..., "model": ...}}. Roles sharing
+    the same (provider, model) are batched into one LLM call; roles without an
+    override use the default provider/model.
+    """
+    if not characters:
+        return {}
+    overrides = role_overrides or {}
+
+    # group characters by their resolved (provider, model)
+    groups: dict[tuple[str, str], list[dict]] = {}
+    for c in characters:
+        ov = overrides.get(c["key"]) or {}
+        key = (str(ov.get("provider") or "auto"), str(ov.get("model") or "auto"))
+        groups.setdefault(key, []).append(c)
+
+    out: dict[str, str] = {}
+    for (provider, model), group in groups.items():
+        out.update(await _one_call(group, provider, model))
+    return out

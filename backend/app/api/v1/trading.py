@@ -7,7 +7,7 @@ from app.core.database import get_db
 from app.models.user import User
 from app.models.watchlist import WatchlistItem
 from app.models.paper import PaperTrade
-from app.models.trading_state import TradingAlert
+from app.models.trading_state import TradingAlert, DeskLLMConfig
 from app.schemas.trading import (
     WatchlistItemOut, WatchlistItemCreate, WatchlistItemUpdate, PaperOpen,
 )
@@ -281,6 +281,42 @@ async def trading_desk(
         "status": "ready",
         "computed_at": snap.computed_at.isoformat() if snap.computed_at else None,
     }
+
+
+# ── per-role desk LLM config (which provider/model each character uses) ─
+@router.get("/desk/llm-config/workspace/{workspace_id}")
+async def get_desk_llm_config(
+    workspace_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    res = await db.execute(
+        select(DeskLLMConfig).where(DeskLLMConfig.workspace_id == workspace_id)
+    )
+    cfg = res.scalar_one_or_none()
+    return {"roles": (cfg.roles if cfg else {})}
+
+
+@router.put("/desk/llm-config/workspace/{workspace_id}")
+async def set_desk_llm_config(
+    workspace_id: uuid.UUID,
+    payload: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """payload: {"roles": {role_key: {"provider": "...", "model": "..."}}}."""
+    roles = payload.get("roles", {}) if isinstance(payload, dict) else {}
+    res = await db.execute(
+        select(DeskLLMConfig).where(DeskLLMConfig.workspace_id == workspace_id)
+    )
+    cfg = res.scalar_one_or_none()
+    if cfg is None:
+        cfg = DeskLLMConfig(workspace_id=workspace_id, roles=roles)
+        db.add(cfg)
+    else:
+        cfg.roles = roles
+    await db.commit()
+    return {"roles": roles}
 
 
 # ── server-side alerts (detected by the worker, stored in DB) ───
