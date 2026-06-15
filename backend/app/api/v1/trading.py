@@ -279,12 +279,29 @@ async def trading_desk(
     ]
     opps = await daily_opportunities(items) if items else []
 
+    # live prices (one ticker call → all markets) for fresh, moving numbers
+    from app.trading.bitkub import to_market_symbol
+    prices: dict[str, float] = {}
+    try:
+        ticker = await BitkubClient().ticker()
+        for w in items:
+            mk = to_market_symbol(w["symbol"])
+            rec = ticker.get(mk) if isinstance(ticker, dict) else None
+            if isinstance(rec, dict) and rec.get("last") is not None:
+                prices[w["symbol"]] = float(rec["last"])
+    except Exception:
+        prices = {}
+
     pres = await db.execute(
         select(PaperTrade).where(
             PaperTrade.workspace_id == workspace_id, PaperTrade.status == "OPEN"
         )
     )
-    positions = [{"symbol": t.symbol} for t in pres.scalars().all()]
+    positions = []
+    for t in pres.scalars().all():
+        cur = prices.get(t.symbol)
+        u = unrealized(t.entry_price, cur, t.size_thb, t.qty) if cur else None
+        positions.append({"symbol": t.symbol, "unrealized_thb": u["pnl_thb"] if u else None})
 
     cres = await db.execute(
         select(PaperTrade).where(
@@ -299,7 +316,9 @@ async def trading_desk(
     news_items = await fetch_news()
     news_agg = aggregate_sentiment(news_items, assets or None)
 
-    return {"characters": build_desk(opps, positions, stats, news_agg)}
+    # rotation seed (changes each minute) → vary which news/detail surfaces
+    seed = int(datetime.now(timezone.utc).timestamp() // 60)
+    return {"characters": build_desk(opps, positions, stats, news_agg, prices, seed)}
 
 
 # ── server-side alerts (detected by the scheduler) ──────────────

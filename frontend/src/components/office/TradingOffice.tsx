@@ -31,12 +31,13 @@ const COLORS: Record<string, string> = {
 };
 const ORDER = ["coach", "analyst", "news", "exec", "risk", "monitor", "trader"];
 
-// ── bubble turn/stream timings ──
-const TURN_MS = 3200;    // a new character takes the floor every 3.2s
+// ── bubble stream timings ──
 const SHOW_MS = 5000;    // hold the full message 5s, then float away
 const STREAM_MS = 35;    // typewriter tick
 const CHARS_PER_TICK = 2;
 const FADE_MS = 600;
+const STAGGER_MS = 900;  // gap between characters reacting to fresh data
+const POLL_MS = 15_000;  // refresh desk data (prices move → new things to say)
 
 type Phase = "stream" | "show" | "fade";
 type Bubble = { text: string; idx: number; phase: Phase; born: number };
@@ -69,9 +70,7 @@ export default function TradingOffice({ officeName }: Props) {
 
   // ── bubble engine ──
   const [bubbles, setBubbles] = useState<Record<string, Bubble>>({});
-  const charsRef = useRef<DeskChar[]>([]);
-  const turnRef = useRef(0);
-  useEffect(() => { charsRef.current = chars; }, [chars]);
+  const lastSpoken = useRef<Record<string, string>>({});  // last message streamed per char
 
   useEffect(() => { if (current) fetchTemplates(current.id); }, [current, fetchTemplates]);
   useEffect(() => { if (!editMode) setPositions(loadPositions(activeTemplate?.markers)); }, [activeTemplate, editMode]);
@@ -89,25 +88,24 @@ export default function TradingOffice({ officeName }: Props) {
   useEffect(() => { load(); }, [load]);
   useEffect(() => {
     if (!current || editMode) return;
-    const t = setInterval(load, 30_000);
+    const t = setInterval(load, POLL_MS);
     return () => clearInterval(t);
   }, [current, editMode, load]);
 
-  // turn scheduler: give the floor to the next character in rotation
+  // speak ONLY when a character's message is new (fresh data/analysis) —
+  // no blind re-streaming of the same line. Stagger so they don't all talk at once.
   useEffect(() => {
     if (editMode) { setBubbles({}); return; }
-    const tick = () => {
-      const key = ORDER[turnRef.current % ORDER.length];
-      turnRef.current++;
-      const c = charsRef.current.find((x) => x.key === key);
-      if (c && c.message) {
-        setBubbles((b) => ({ ...b, [key]: { text: c.message, idx: 0, phase: "stream", born: Date.now() } }));
-      }
-    };
-    tick();
-    const t = setInterval(tick, TURN_MS);
-    return () => clearInterval(t);
-  }, [editMode]);
+    const fresh = chars.filter((c) => c.message && lastSpoken.current[c.key] !== c.message);
+    if (fresh.length === 0) return;
+    const timers = fresh.map((c, i) =>
+      setTimeout(() => {
+        lastSpoken.current[c.key] = c.message;
+        setBubbles((b) => ({ ...b, [c.key]: { text: c.message, idx: 0, phase: "stream", born: Date.now() } }));
+      }, i * STAGGER_MS)
+    );
+    return () => timers.forEach(clearTimeout);
+  }, [chars, editMode]);
 
   // streaming (typewriter)
   useEffect(() => {

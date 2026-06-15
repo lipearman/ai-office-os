@@ -216,46 +216,59 @@ async def daily_opportunities(items: list[dict], concurrency: int = 4) -> list[d
     return out
 
 
-def build_desk(opps: list[dict], positions: list[dict], stats: dict,
-               news_agg: dict) -> list[dict]:
-    """Synthesize 7 trading-desk characters' current messages from real data.
+def _fmt_price(p: float | None) -> str:
+    return f"{p:,.0f}" if p is not None and p >= 100 else (f"{p:,.4f}" if p is not None else "—")
 
-    Deterministic (no LLM) — each character speaks from the live state.
+
+def build_desk(opps: list[dict], positions: list[dict], stats: dict,
+               news_agg: dict, prices: dict | None = None, seed: int = 0) -> list[dict]:
+    """Synthesize 7 trading-desk characters' messages from live data.
+
+    Deterministic (no LLM). Messages include moving numbers (live price /
+    unrealized PnL) and a rotation `seed` so they reflect fresh data instead
+    of repeating a static snapshot.
     """
+    prices = prices or {}
     sig = [o for o in opps if o.get("signal_today")]
     top = sig[0] if sig else (opps[0] if opps else None)
     n_pos = len(positions)
     news_assets = news_agg.get("assets", []) if news_agg else []
-    news_top = news_assets[0] if news_assets else None
 
-    # 📊 Market Analyst
-    if sig:
-        analyst = f"วันนี้มี {len(sig)} เหรียญเข้า setup — เด่นสุด {top['symbol']} (win ~{top.get('win_chance_pct')}%)"
-    elif opps:
-        analyst = f"ยังไม่มีเหรียญเข้า setup วันนี้ — เฝ้าดู {len(opps)} เหรียญใน watchlist"
+    # 📊 Market Analyst — current price of the focus symbol (moves each poll)
+    if top:
+        sym = top["symbol"]
+        px = _fmt_price(prices.get(sym) or top.get("price"))
+        if sig:
+            analyst = f"{sym} {px} เข้า setup แล้ว (win ~{top.get('win_chance_pct')}%) · มีสัญญาณ {len(sig)} เหรียญ"
+        else:
+            analyst = f"{sym} ราคา {px} · ยังไม่เข้า setup — เฝ้าดู {len(opps)} เหรียญ"
     else:
         analyst = "ยังไม่มีเหรียญใน watchlist — เพิ่มเหรียญเพื่อเริ่มวิเคราะห์"
 
-    # 📰 News & Sentiment
-    if news_top:
-        news_msg = f"{news_top['asset']}: {news_top['label']} ({news_top['count']} ข่าว, {news_top['bullish']}↑/{news_top['bearish']}↓)"
+    # 📰 News & Sentiment — rotate which asset's headline surfaces
+    if news_assets:
+        na = news_assets[seed % len(news_assets)]
+        head = na["headlines"][0]["title"][:70] if na.get("headlines") else ""
+        news_msg = f"{na['asset']}: {na['label']} ({na['count']} ข่าว) — {head}" if head else \
+                   f"{na['asset']}: {na['label']} ({na['count']} ข่าว, {na['bullish']}↑/{na['bearish']}↓)"
     else:
         news_msg = "ยังไม่มีข่าวเด่นเกี่ยวกับเหรียญใน watchlist"
 
-    # 🛡️ Risk Officer
+    # 🛡️ Risk Officer — live unrealized exposure
+    unreal = sum((p.get("unrealized_thb") or 0.0) for p in positions)
     if n_pos == 0:
         risk = "ไม่มี position เปิดอยู่ — ความเสี่ยงเป็นศูนย์"
-    elif n_pos <= 3:
-        risk = f"มี {n_pos} position เปิดอยู่ — ความเสี่ยงอยู่ในเกณฑ์โอเค"
     else:
-        risk = f"⚠️ มี {n_pos} position เปิดพร้อมกัน — ระวังความเสี่ยงกระจุกตัว"
+        tone = "ระวังกระจุกตัว ⚠️" if n_pos > 3 else "อยู่ในเกณฑ์โอเค"
+        risk = f"{n_pos} position · unrealized {unreal:+,.0f}฿ — {tone}"
 
-    # 🤖 Trader
+    # 🤖 Trader — live floating PnL per holding
     if n_pos:
-        syms = ", ".join(p["symbol"] for p in positions[:3])
-        trader = f"ถืออยู่ {n_pos} ดีล: {syms}"
+        parts = [f"{p['symbol']} {(p.get('unrealized_thb') or 0):+,.0f}฿" for p in positions[:2]]
+        trader = f"ถือ {n_pos} ดีล · " + ", ".join(parts)
     elif sig:
-        trader = f"พร้อมเข้า {top['symbol']} ถ้ายืนยัน — กด 📝 เทรดได้เลย"
+        px = _fmt_price(prices.get(top["symbol"]) or top.get("price"))
+        trader = f"พร้อมเข้า {top['symbol']} ที่ {px} — กด 📝 เทรดได้เลย"
     else:
         trader = "รอจังหวะ — ยังไม่มี setup ให้เข้า"
 
