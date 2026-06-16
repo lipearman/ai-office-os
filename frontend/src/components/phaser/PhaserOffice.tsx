@@ -263,7 +263,7 @@ export default function PhaserOffice({ agents, officeName }: Props) {
     setSelectedAgent(null);
   }, [selectedAgent, workspace, openOrCreate, setActive]);
 
-  const online = agents.filter((a) => a.status !== "OFFLINE" && a.status !== "offline").length;
+  const online = agents.filter((a) => a.status.toUpperCase() !== "OFFLINE").length;
 
   return (
     <div className="relative w-full h-full overflow-hidden bg-[#0e0b16]">
