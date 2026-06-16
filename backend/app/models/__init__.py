@@ -11,7 +11,7 @@ from app.models.event import UsageEvent
 from app.models.audit import AuditLog
 from app.models.watchlist import WatchlistItem
 from app.models.paper import PaperTrade
-from app.models.trading_state import DeskSnapshot, TradingAlert, DeskLLMConfig
+from app.models.trading_state import DeskSnapshot, TradingAlert, DeskLLMConfig, AlertWebhook
 
 __all__ = [
     "User", "UserRole",
@@ -27,5 +27,5 @@ __all__ = [
     "AuditLog",
     "WatchlistItem",
     "PaperTrade",
-    "DeskSnapshot", "TradingAlert", "DeskLLMConfig",
+    "DeskSnapshot", "TradingAlert", "DeskLLMConfig", "AlertWebhook",
 ]

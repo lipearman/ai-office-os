@@ -109,6 +109,34 @@ export default function TradingPage() {
     setAlertUnread((n) => Math.max(0, n - 1));
   };
 
+  // outbound webhook config (opt-in)
+  const [webhook, setWebhook] = useState<{ url: string; enabled: boolean }>({ url: "", enabled: false });
+  const [webhookMsg, setWebhookMsg] = useState<string | null>(null);
+  useEffect(() => {
+    if (!current) return;
+    api.get(`/trading/alerts/webhook/workspace/${current.id}`).then((r) => setWebhook(r.data)).catch(() => {});
+  }, [current]);
+  const saveWebhook = async () => {
+    if (!current) return;
+    setWebhookMsg(null);
+    try {
+      await api.put(`/trading/alerts/webhook/workspace/${current.id}`, webhook);
+      setWebhookMsg("บันทึกแล้ว");
+    } catch (e: any) {
+      setWebhookMsg(e?.response?.data?.detail ?? "บันทึกไม่สำเร็จ");
+    }
+  };
+  const testWebhook = async () => {
+    if (!current) return;
+    setWebhookMsg("กำลังส่งทดสอบ…");
+    try {
+      const r = await api.post(`/trading/alerts/webhook/workspace/${current.id}/test`);
+      setWebhookMsg(r.data.ok ? "✅ ส่งทดสอบสำเร็จ" : "❌ ปลายทางไม่ตอบ 2xx");
+    } catch (e: any) {
+      setWebhookMsg(e?.response?.data?.detail ?? "ส่งทดสอบไม่สำเร็จ");
+    }
+  };
+
   // ── load watchlist + symbol list ──
   const loadWatchlist = () => {
     if (!current) return;
@@ -500,6 +528,21 @@ export default function TradingPage() {
                     )}
                   </div>
                 ))}
+              </div>
+
+              {/* outbound webhook config (opt-in) */}
+              <div className="mt-2 border-t border-white/10 pt-2">
+                <label className="mb-1 flex items-center gap-1.5 px-1 text-[10px] font-semibold text-white/60">
+                  <input type="checkbox" checked={webhook.enabled} onChange={(e) => setWebhook({ ...webhook, enabled: e.target.checked })} />
+                  ส่ง alert ออก webhook (เมื่อเจอ setup ใหม่)
+                </label>
+                <input value={webhook.url} onChange={(e) => setWebhook({ ...webhook, url: e.target.value })}
+                  placeholder="https://your-endpoint…" className="w-full rounded border border-white/10 bg-white/5 px-2 py-1 text-[11px] text-white placeholder-white/25 focus:border-accent-500/50 focus:outline-none" />
+                <div className="mt-1 flex items-center gap-2">
+                  <button onClick={saveWebhook} className="rounded border border-white/15 px-2 py-0.5 text-[10px] text-white/70 hover:bg-white/10">บันทึก</button>
+                  <button onClick={testWebhook} disabled={!webhook.url} className="rounded border border-white/15 px-2 py-0.5 text-[10px] text-white/70 hover:bg-white/10 disabled:opacity-40">ส่งทดสอบ</button>
+                  {webhookMsg && <span className="text-[10px] text-white/50">{webhookMsg}</span>}
+                </div>
               </div>
             </div>
           )}

@@ -7,7 +7,8 @@ from app.core.database import get_db
 from app.models.user import User
 from app.models.watchlist import WatchlistItem
 from app.models.paper import PaperTrade
-from app.models.trading_state import TradingAlert, DeskLLMConfig
+from app.models.trading_state import TradingAlert, DeskLLMConfig, AlertWebhook
+from app.trading import alert_webhook
 from app.schemas.trading import (
     WatchlistItemOut, WatchlistItemCreate, WatchlistItemUpdate, PaperOpen,
 )
@@ -382,6 +383,61 @@ async def clear_alerts(
         delete(TradingAlert).where(TradingAlert.workspace_id == workspace_id)
     )
     await db.commit()
+
+
+# ── outbound alert webhook (opt-in; user sets their own URL) ────
+@router.get("/alerts/webhook/workspace/{workspace_id}")
+async def get_alert_webhook(
+    workspace_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    wh = (await db.execute(
+        select(AlertWebhook).where(AlertWebhook.workspace_id == workspace_id)
+    )).scalar_one_or_none()
+    return {"url": wh.url if wh else "", "enabled": wh.enabled if wh else False}
+
+
+@router.put("/alerts/webhook/workspace/{workspace_id}")
+async def set_alert_webhook(
+    workspace_id: uuid.UUID,
+    payload: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    url = (payload.get("url") or "").strip()
+    enabled = bool(payload.get("enabled"))
+    if enabled and not alert_webhook.valid_webhook_url(url):
+        raise HTTPException(status_code=400, detail="URL ต้องขึ้นต้นด้วย http:// หรือ https://")
+    wh = (await db.execute(
+        select(AlertWebhook).where(AlertWebhook.workspace_id == workspace_id)
+    )).scalar_one_or_none()
+    if wh is None:
+        wh = AlertWebhook(workspace_id=workspace_id, url=url, enabled=enabled)
+        db.add(wh)
+    else:
+        wh.url = url
+        wh.enabled = enabled
+    await db.commit()
+    return {"url": url, "enabled": enabled}
+
+
+@router.post("/alerts/webhook/workspace/{workspace_id}/test")
+async def test_alert_webhook(
+    workspace_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    wh = (await db.execute(
+        select(AlertWebhook).where(AlertWebhook.workspace_id == workspace_id)
+    )).scalar_one_or_none()
+    if not wh or not wh.url:
+        raise HTTPException(status_code=400, detail="ยังไม่ได้ตั้งค่า webhook URL")
+    ok = await alert_webhook.post_alerts(
+        wh.url, workspace_id,
+        [{"symbol": "TEST", "text": "🔔 ทดสอบ webhook จาก AI Office OS trading desk"}],
+    )
+    return {"ok": ok}
 
 
 # ── news & sentiment ────────────────────────────────────────────

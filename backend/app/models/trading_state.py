@@ -46,6 +46,21 @@ class DeskLLMConfig(Base, UUIDMixin, TimestampMixin):
     roles: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
+class AlertWebhook(Base, UUIDMixin, TimestampMixin):
+    """Per-workspace outbound webhook for trading alerts (opt-in).
+
+    The user sets their own URL; the worker POSTs new-setup alerts to it. Empty/
+    disabled = no outbound calls.
+    """
+    __tablename__ = "alert_webhooks"
+
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id"), nullable=False, unique=True, index=True
+    )
+    url: Mapped[str] = mapped_column(String(500), default="")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+
 class TradingAlert(Base, UUIDMixin, TimestampMixin):
     """A 'new setup' alert detected by the worker (durable, replaces in-memory)."""
     __tablename__ = "trading_alerts"

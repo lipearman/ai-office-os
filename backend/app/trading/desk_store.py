@@ -37,7 +37,8 @@ async def _publish(workspace_id, characters) -> None:
 
 from app.models.watchlist import WatchlistItem
 from app.models.paper import PaperTrade
-from app.models.trading_state import DeskSnapshot, TradingAlert, DeskLLMConfig
+from app.models.trading_state import DeskSnapshot, TradingAlert, DeskLLMConfig, AlertWebhook
+from app.trading import alert_webhook
 from app.trading.service import daily_opportunities, build_desk
 from app.trading.paper import unrealized, paper_stats
 from app.trading.news import fetch_news, aggregate_sentiment
@@ -154,16 +155,21 @@ async def compute_full(db: AsyncSession, workspace_id) -> DeskSnapshot:
     now_sig = {o["symbol"] for o in opps if o.get("signal_today")}
 
     # record alerts for symbols that NEWLY entered a setup
+    new_alerts: list[dict] = []
     for sym in (now_sig - prev_signals):
         o = next((x for x in opps if x["symbol"] == sym), None)
         if not o:
             continue
+        text = f"{sym} เข้า setup ({o.get('strategy')}) — win ~{o.get('win_chance_pct')}%"
         db.add(TradingAlert(
             workspace_id=workspace_id, symbol=sym, strategy=o.get("strategy"),
             timeframe=o.get("timeframe"), win_chance_pct=o.get("win_chance_pct"),
-            label=o.get("label"),
-            text=f"{sym} เข้า setup ({o.get('strategy')}) — win ~{o.get('win_chance_pct')}%",
+            label=o.get("label"), text=text,
         ))
+        new_alerts.append({
+            "symbol": sym, "strategy": o.get("strategy"), "timeframe": o.get("timeframe"),
+            "win_chance_pct": o.get("win_chance_pct"), "label": o.get("label"), "text": text,
+        })
 
     # stash analysis so the cheap price-only tick can rebuild without re-scanning
     meta = {"opps": opps, "stats": stats, "news_agg": news_agg, "prices": prices,
@@ -179,6 +185,14 @@ async def compute_full(db: AsyncSession, workspace_id) -> DeskSnapshot:
     snap.priced_at = now
     await db.commit()
     await _publish(workspace_id, snap.characters)
+
+    # opt-in outbound webhook for newly-detected setups (best-effort)
+    if new_alerts:
+        wh = (await db.execute(
+            select(AlertWebhook).where(AlertWebhook.workspace_id == workspace_id)
+        )).scalar_one_or_none()
+        if wh and wh.enabled and wh.url:
+            await alert_webhook.post_alerts(wh.url, workspace_id, new_alerts)
     return snap
 
 
