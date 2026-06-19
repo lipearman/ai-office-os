@@ -43,3 +43,6 @@ uploads/
 
 # build artifacts
 *.tsbuildinfo
+
+# agent notes
+AGENTS.md
