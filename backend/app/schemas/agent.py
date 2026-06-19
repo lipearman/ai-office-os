@@ -10,12 +10,14 @@ class AgentOut(BaseModel):
     name: str
     agent_type: str
     description: str | None
+    system_prompt: str | None = None
     model_provider: str
     model_name: str
     avatar_url: str | None
     status: str
     is_active: bool
     tools: list
+    config: dict = {}
     position_x: float
     position_y: float
     position_z: float
@@ -47,3 +49,5 @@ class AgentUpdate(BaseModel):
     position_y: float | None = None
     position_z: float | None = None
     is_active: bool | None = None
+    tools: list | None = None
+    config: dict | None = None

@@ -17,43 +17,43 @@ from app.core.config import settings
 
 
 # ── provider builders ───────────────────────────────────────────
-def _build_openai(model: str) -> BaseChatModel | None:
+def _build_openai(model: str, temperature: float = 0.3) -> BaseChatModel | None:
     if not settings.OPENAI_API_KEY:
         return None
     from langchain_openai import ChatOpenAI
-    return ChatOpenAI(model=model, api_key=settings.OPENAI_API_KEY, temperature=0.3, streaming=True)
+    return ChatOpenAI(model=model, api_key=settings.OPENAI_API_KEY, temperature=temperature, streaming=True)
 
 
-def _build_anthropic(model: str) -> BaseChatModel | None:
+def _build_anthropic(model: str, temperature: float = 0.3) -> BaseChatModel | None:
     if not settings.ANTHROPIC_API_KEY:
         return None
     from langchain_anthropic import ChatAnthropic
-    return ChatAnthropic(model=model, api_key=settings.ANTHROPIC_API_KEY, temperature=0.3)
+    return ChatAnthropic(model=model, api_key=settings.ANTHROPIC_API_KEY, temperature=temperature)
 
 
-def _build_gemini(model: str) -> BaseChatModel | None:
+def _build_gemini(model: str, temperature: float = 0.3) -> BaseChatModel | None:
     if not settings.GEMINI_API_KEY:
         return None
     from langchain_google_genai import ChatGoogleGenerativeAI
-    return ChatGoogleGenerativeAI(model=model, google_api_key=settings.GEMINI_API_KEY, temperature=0.3)
+    return ChatGoogleGenerativeAI(model=model, google_api_key=settings.GEMINI_API_KEY, temperature=temperature)
 
 
-def _build_openrouter(model: str) -> BaseChatModel | None:
+def _build_openrouter(model: str, temperature: float = 0.3) -> BaseChatModel | None:
     if not settings.OPENROUTER_API_KEY:
         return None
     from langchain_openai import ChatOpenAI
     return ChatOpenAI(
         model=model, api_key=settings.OPENROUTER_API_KEY,
-        base_url="https://openrouter.ai/api/v1", temperature=0.3, streaming=True,
+        base_url="https://openrouter.ai/api/v1", temperature=temperature, streaming=True,
     )
 
 
-def _build_ollama(model: str) -> BaseChatModel | None:
+def _build_ollama(model: str, temperature: float = 0.3) -> BaseChatModel | None:
     from langchain_ollama import ChatOllama
-    return ChatOllama(model=model, base_url=settings.OLLAMA_BASE_URL, temperature=0.3)
+    return ChatOllama(model=model, base_url=settings.OLLAMA_BASE_URL, temperature=temperature)
 
 
-_BUILDERS: dict[str, Callable[[str], BaseChatModel | None]] = {
+_BUILDERS: dict[str, Callable[[str, float], BaseChatModel | None]] = {
     "openai": _build_openai,
     "anthropic": _build_anthropic,
     "gemini": _build_gemini,
@@ -77,9 +77,9 @@ def _resolve_model(provider: str, model: str) -> str:
     return _DEFAULT_MODEL.get(provider, settings.DEFAULT_LLM_MODEL)
 
 
-@lru_cache(maxsize=16)
-def get_llm(provider: str = "auto", model: str = "auto") -> BaseChatModel:
-    """Resolve an LLM for the given provider/model.
+@lru_cache(maxsize=64)
+def get_llm(provider: str = "auto", model: str = "auto", temperature: float = 0.3) -> BaseChatModel:
+    """Resolve an LLM for the given provider/model/temperature.
 
     - provider "auto"/empty → settings.DEFAULT_LLM_PROVIDER (Ollama by default)
     - if the requested provider can't be built (e.g. missing API key), fall back
@@ -92,7 +92,7 @@ def get_llm(provider: str = "auto", model: str = "auto") -> BaseChatModel:
     builder = _BUILDERS.get(prov)
     if builder is not None:
         try:
-            llm = builder(_resolve_model(prov, model))
+            llm = builder(_resolve_model(prov, model), temperature)
             if llm is not None:
                 return llm
         except Exception:
@@ -104,7 +104,7 @@ def get_llm(provider: str = "auto", model: str = "auto") -> BaseChatModel:
         default_builder = _BUILDERS.get(default_prov)
         if default_builder is not None:
             try:
-                llm = default_builder(_resolve_model(default_prov, "auto"))
+                llm = default_builder(_resolve_model(default_prov, "auto"), temperature)
                 if llm is not None:
                     return llm
             except Exception:

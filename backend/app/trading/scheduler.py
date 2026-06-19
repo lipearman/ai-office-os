@@ -23,7 +23,7 @@ from app.trading import desk_store
 log = structlog.get_logger()
 _scheduler: AsyncIOScheduler | None = None
 
-HEAVY_MINUTES = 3
+HEAVY_SECONDS = 180
 FAST_SECONDS = 20
 
 
@@ -79,11 +79,11 @@ def start_scheduler() -> None:
         return
     _scheduler = AsyncIOScheduler()
     # run the heavy tick once at startup so desks fill in quickly, then on interval
-    _scheduler.add_job(heavy_tick, "interval", minutes=HEAVY_MINUTES, id="desk_heavy")
+    _scheduler.add_job(heavy_tick, "interval", seconds=HEAVY_SECONDS, id="desk_heavy")
     _scheduler.add_job(fast_tick, "interval", seconds=FAST_SECONDS, id="desk_fast")
     _scheduler.add_job(heavy_tick, id="desk_heavy_boot")  # immediate first run
     _scheduler.start()
-    log.info("trading.scheduler.started", heavy_minutes=HEAVY_MINUTES, fast_seconds=FAST_SECONDS)
+    log.info("trading.scheduler.started", heavy_seconds=HEAVY_SECONDS, fast_seconds=FAST_SECONDS)
 
 
 def stop_scheduler() -> None:

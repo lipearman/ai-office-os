@@ -13,13 +13,13 @@ from app.agents.prompts import AGENT_PROMPTS
 router = APIRouter(prefix="/seed", tags=["seed"])
 
 DEFAULT_AGENTS = [
-    {"name": "Alex",   "agent_type": "reception", "room_type": "lobby",   "position_x": 0,   "position_z": 0,   "description": "Reception & Routing Agent"},
-    {"name": "Victor", "agent_type": "pm",        "room_type": "ceo",     "position_x": -20, "position_z": -16, "description": "Project Manager Agent"},
-    {"name": "Bailey", "agent_type": "ba",        "room_type": "ba",      "position_x": 0,   "position_z": -16, "description": "Business Analyst Agent"},
-    {"name": "Dev",    "agent_type": "dev",       "room_type": "dev",     "position_x": 20,  "position_z": -16, "description": "Developer Agent"},
-    {"name": "Dana",   "agent_type": "dba",       "room_type": "dba",     "position_x": 20,  "position_z": 0,   "description": "Database Administrator Agent"},
-    {"name": "Quinn",  "agent_type": "qa",        "room_type": "qa",      "position_x": 20,  "position_z": 16,  "description": "QA Engineer Agent"},
-    {"name": "Sage",   "agent_type": "rag",       "room_type": "rag",     "position_x": -20, "position_z": 16,  "description": "Knowledge Agent"},
+    {"name": "Trader",  "agent_type": "trader",  "room_type": "trading", "position_x": -20, "position_z": -12, "description": "Trading Engine Agent"},
+    {"name": "Analyst", "agent_type": "analyst", "room_type": "trading", "position_x": 0,   "position_z": -12, "description": "Market Analyst Agent"},
+    {"name": "News",    "agent_type": "news",    "room_type": "trading", "position_x": 20,  "position_z": -12, "description": "News & Sentiment Agent"},
+    {"name": "Risk",    "agent_type": "risk",    "room_type": "trading", "position_x": -20, "position_z": 0,   "description": "Risk Officer Agent"},
+    {"name": "Coach",   "agent_type": "coach",   "room_type": "trading", "position_x": 0,   "position_z": 0,   "description": "Strategy & Performance Coach"},
+    {"name": "Monitor", "agent_type": "monitor", "room_type": "trading", "position_x": 20,  "position_z": 0,   "description": "Model Monitor Agent"},
+    {"name": "Exec",    "agent_type": "exec",    "room_type": "trading", "position_x": 0,   "position_z": 12,  "description": "Execution Reviewer Agent"},
 ]
 
 

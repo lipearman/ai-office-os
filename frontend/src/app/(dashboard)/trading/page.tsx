@@ -8,6 +8,7 @@ import {
   TrendingUp, RefreshCw, Plus, X, Search, AlertTriangle,
   ArrowUpRight, ArrowDownRight, Minus as MinusIcon, Bell, BellOff,
 } from "lucide-react";
+import { PipelineView } from "@/components/trading/PipelineView";
 
 interface WatchItem {
   id: string;
@@ -452,6 +453,11 @@ export default function TradingPage() {
           <RefreshCw size={15} className={scanning ? "animate-spin" : ""} />
           {scanning ? "กำลังสแกน…" : "สแกนสัญญาณ"}
         </button>
+      </div>
+
+      {/* LangGraph pipeline visualization */}
+      <div className="mb-5 rounded-xl border border-white/10 bg-[#141228]/70 px-4 py-3 backdrop-blur-md">
+        <PipelineView />
       </div>
 
       {error && (

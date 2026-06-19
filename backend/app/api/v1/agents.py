@@ -7,6 +7,21 @@ from app.models.agent import Agent, AgentStatus
 from app.models.user import User
 from app.schemas.agent import AgentOut, AgentCreate, AgentUpdate
 from app.api.deps import get_current_user
+from app.trading.nodes import (
+    _PROMPT_MONITOR, _PROMPT_ANALYST, _PROMPT_NEWS, _PROMPT_TRADER,
+    _PROMPT_RISK, _PROMPT_EXEC, _PROMPT_COACH, _PROMPT_SUMMARY,
+)
+
+_DEFAULT_PROMPTS: dict[str, str] = {
+    "monitor": _PROMPT_MONITOR,
+    "analyst": _PROMPT_ANALYST,
+    "news": _PROMPT_NEWS,
+    "trader": _PROMPT_TRADER,
+    "risk": _PROMPT_RISK,
+    "exec": _PROMPT_EXEC,
+    "coach": _PROMPT_COACH,
+    "summary": _PROMPT_SUMMARY,
+}
 
 router = APIRouter(prefix="/agents", tags=["agents"])
 
@@ -37,7 +52,10 @@ async def create_agent(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    agent = Agent(workspace_id=workspace_id, **data.model_dump())
+    payload = data.model_dump()
+    if not payload.get("system_prompt") and payload.get("agent_type") in _DEFAULT_PROMPTS:
+        payload["system_prompt"] = _DEFAULT_PROMPTS[payload["agent_type"]]
+    agent = Agent(workspace_id=workspace_id, **payload)
     db.add(agent)
     await db.flush()
     return AgentOut.model_validate(agent)
@@ -68,9 +86,14 @@ async def update_agent(
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
 
-    for field, value in data.model_dump(exclude_none=True).items():
+    updates = data.model_dump(exclude_none=True)
+    # if system_prompt is being cleared, fill from default instead
+    if "system_prompt" in updates and not updates["system_prompt"] and agent.agent_type in _DEFAULT_PROMPTS:
+        updates["system_prompt"] = _DEFAULT_PROMPTS[agent.agent_type]
+    for field, value in updates.items():
         setattr(agent, field, value)
 
+    await db.commit()
     return AgentOut.model_validate(agent)
 
 

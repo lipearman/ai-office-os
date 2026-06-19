@@ -3,8 +3,8 @@
 The worker publishes the latest desk state on the Redis DESK_CHANNEL (possibly
 from a separate process). The API process — which holds the live WebSocket
 connections — runs this subscriber and rebroadcasts each update to the right
-workspace as a `desk.update` event. Clients then update in realtime instead of
-waiting for the next poll.
+workspace as a `desk.update` or `desk.pipeline_step` event. Clients then update
+in realtime instead of waiting for the next poll.
 """
 from __future__ import annotations
 
@@ -33,10 +33,26 @@ async def _listen() -> None:
                     continue
                 try:
                     data = json.loads(msg["data"])
-                    await manager.broadcast_workspace(
-                        str(data["workspace_id"]),
-                        {"type": "desk.update", "characters": data.get("characters", [])},
-                    )
+                    event_type = data.get("type", "desk.update")
+                    if event_type == "desk.pipeline_step":
+                        await manager.broadcast_workspace(
+                            str(data["workspace_id"]),
+                            {
+                                "type": "desk.pipeline_step",
+                                "step": data.get("step"),
+                                "run_status": data.get("run_status"),
+                            },
+                        )
+                    else:
+                        await manager.broadcast_workspace(
+                            str(data["workspace_id"]),
+                            {
+                                "type": "desk.update",
+                                "characters": data.get("characters", []),
+                                "ticker": data.get("ticker", {}),
+                                "news_agg": data.get("news_agg", {}),
+                            },
+                        )
                 except Exception as e:
                     log.warning("desk_realtime.dispatch_failed", error=str(e))
         except asyncio.CancelledError:

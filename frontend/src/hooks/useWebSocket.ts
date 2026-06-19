@@ -62,6 +62,7 @@ class WSManager {
     ws.onclose = () => {
       if (this._ws !== ws) return;
       this._ws = null;
+      this._emit({ type: "ws.disconnected" });
       if (!this._intentionalClose) {
         this._timer = setTimeout(() => this._open(), 3000);
       }

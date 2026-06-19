@@ -34,3 +34,12 @@ npm-debug.log*
 # OS
 .DS_Store
 Thumbs.db
+
+# logs
+*.log
+
+# uploads
+uploads/
+
+# build artifacts
+*.tsbuildinfo

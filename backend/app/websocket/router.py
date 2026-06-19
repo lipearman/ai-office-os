@@ -75,8 +75,9 @@ async def websocket_endpoint(
                 await manager.broadcast_workspace(workspace_id, data, exclude_user=user_id)
 
     except WebSocketDisconnect:
-        manager.disconnect(workspace_id, user_id)
-        await manager.broadcast_workspace(
-            workspace_id,
-            {"type": "presence.leave", "user_id": user_id},
-        )
+        manager.disconnect(workspace_id, user_id, websocket)
+        if not manager.is_online(workspace_id, user_id):
+            await manager.broadcast_workspace(
+                workspace_id,
+                {"type": "presence.leave", "user_id": user_id},
+            )
