@@ -146,6 +146,8 @@ async def send_message(
             conversation_id=str(conv.id),
             history=history,
             memory_context=memory_context,
+            model_provider=agent.model_provider if agent else "auto",
+            model_name=agent.model_name if agent else "auto",
         )
     except Exception as ex:
         reply_text, _status, _error = f"Error: {ex}", "error", str(ex)
@@ -233,6 +235,8 @@ async def stream_message(
                 user_id=str(current_user.id),
                 conversation_id=str(conv.id),
                 history=history,
+                model_provider=agent.model_provider if agent else "auto",
+                model_name=agent.model_name if agent else "auto",
             ):
                 if not done:
                     full_reply += delta

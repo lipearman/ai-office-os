@@ -216,6 +216,115 @@ async def daily_opportunities(items: list[dict], concurrency: int = 4) -> list[d
     return out
 
 
+def _fmt_price(p: float | None) -> str:
+    return f"{p:,.0f}" if p is not None and p >= 100 else (f"{p:,.4f}" if p is not None else "—")
+
+
+def build_desk(opps: list[dict], positions: list[dict], stats: dict,
+               news_agg: dict, prices: dict | None = None, seed: int = 0) -> list[dict]:
+    """Synthesize 7 trading-desk characters' messages from live data.
+
+    Deterministic (no LLM). Messages include moving numbers (live price /
+    unrealized PnL) and a rotation `seed` so they reflect fresh data instead
+    of repeating a static snapshot.
+    """
+    prices = prices or {}
+    sig = [o for o in opps if o.get("signal_today")]
+    top = sig[0] if sig else (opps[0] if opps else None)
+    n_pos = len(positions)
+    news_assets = news_agg.get("assets", []) if news_agg else []
+
+    # 📊 Market Analyst — current price of the focus symbol (moves each poll)
+    if top:
+        sym = top["symbol"]
+        px = _fmt_price(prices.get(sym) or top.get("price"))
+        if sig:
+            analyst = f"{sym} {px} เข้า setup แล้ว (win ~{top.get('win_chance_pct')}%) · มีสัญญาณ {len(sig)} เหรียญ"
+        else:
+            analyst = f"{sym} ราคา {px} · ยังไม่เข้า setup — เฝ้าดู {len(opps)} เหรียญ"
+    else:
+        analyst = "ยังไม่มีเหรียญใน watchlist — เพิ่มเหรียญเพื่อเริ่มวิเคราะห์"
+
+    # 📰 News & Sentiment — rotate which asset's headline surfaces
+    if news_assets:
+        na = news_assets[seed % len(news_assets)]
+        head = na["headlines"][0]["title"][:70] if na.get("headlines") else ""
+        news_msg = f"{na['asset']}: {na['label']} ({na['count']} ข่าว) — {head}" if head else \
+                   f"{na['asset']}: {na['label']} ({na['count']} ข่าว, {na['bullish']}↑/{na['bearish']}↓)"
+    else:
+        news_msg = "ยังไม่มีข่าวเด่นเกี่ยวกับเหรียญใน watchlist"
+
+    # 🛡️ Risk Officer — live unrealized exposure
+    unreal = sum((p.get("unrealized_thb") or 0.0) for p in positions)
+    if n_pos == 0:
+        risk = "ไม่มี position เปิดอยู่ — ความเสี่ยงเป็นศูนย์"
+    else:
+        tone = "ระวังกระจุกตัว ⚠️" if n_pos > 3 else "อยู่ในเกณฑ์โอเค"
+        risk = f"{n_pos} position · unrealized {unreal:+,.0f}฿ — {tone}"
+
+    # 🤖 Trader — live floating PnL per holding
+    if n_pos:
+        parts = [f"{p['symbol']} {(p.get('unrealized_thb') or 0):+,.0f}฿" for p in positions[:2]]
+        trader = f"ถือ {n_pos} ดีล · " + ", ".join(parts)
+    elif sig:
+        px = _fmt_price(prices.get(top["symbol"]) or top.get("price"))
+        trader = f"พร้อมเข้า {top['symbol']} ที่ {px} — กด 📝 เทรดได้เลย"
+    else:
+        trader = "รอจังหวะ — ยังไม่มี setup ให้เข้า"
+
+    # 🎯 Coach — rotate through real stat facets by `seed` so the desk keeps
+    # talking instead of saying the same line once and going silent.
+    nt = stats.get("total_trades", 0)
+    if nt:
+        wr = stats.get("win_rate") or 0
+        coach_lines = [
+            f"สถิติสะสม: {nt} เทรด, ชนะ {stats.get('win_rate')}%, PnL {stats.get('total_pnl_thb')}฿",
+            f"Expectancy {stats.get('expectancy_pct')}% ต่อเทรด ({stats.get('wins')}W/{stats.get('losses')}L)",
+            f"win rate {wr}% — " + ("รักษาวินัยไว้ อย่าเพิ่งเพิ่มไซซ์" if wr >= 50 else "เน้น setup คุณภาพ อย่าไล่ราคา"),
+        ]
+        coach = coach_lines[seed % len(coach_lines)]
+    else:
+        coach = "ยังไม่มีประวัติเทรด — เริ่ม paper trade เพื่อสะสมสถิติ"
+
+    # 📉 Model Monitor — rotate real facets (assigned strategies / watch coverage / top score)
+    assigned = [o for o in opps if o.get("assigned")]
+    if opps:
+        monitor_lines: list[str] = []
+        if assigned:
+            monitor_lines.append(f"{len(assigned)} เหรียญมีกลยุทธ์เฉพาะตัวที่ optimize แล้ว")
+        else:
+            monitor_lines.append("ยังไม่ได้ optimize กลยุทธ์ต่อเหรียญ — ลองใช้ Auto-Optimizer")
+        monitor_lines.append(f"เฝ้า {len(opps)} เหรียญ · มีสัญญาณวันนี้ {len(sig)}")
+        if top is not None and top.get("opportunity_score") is not None:
+            monitor_lines.append(f"{top['symbol']} opportunity score {top.get('opportunity_score')}")
+        monitor = monitor_lines[seed % len(monitor_lines)]
+    else:
+        monitor = "ยังไม่ได้ optimize กลยุทธ์ต่อเหรียญ — ลองใช้ Auto-Optimizer"
+
+    # 🔍 Execution Reviewer — rotate quality facets by `seed`
+    if nt:
+        pf = stats.get("profit_factor")
+        wins = stats.get("wins") or 0
+        losses = stats.get("losses") or 0
+        exec_lines = [
+            f"Profit Factor {pf if pf is not None else '∞'} · avg win {stats.get('avg_win_pct')}% / loss {stats.get('avg_loss_pct')}%",
+            f"{wins} ดีลกำไร / {losses} ขาดทุน — " + ("คุณภาพการเข้าโอเค" if wins >= losses else "ทบทวนจังหวะเข้า"),
+        ]
+        exec_rev = exec_lines[seed % len(exec_lines)]
+    else:
+        exec_rev = "ยังไม่มีดีลปิดให้รีวิวคุณภาพการเข้า/ออก"
+
+    return [
+        {"key": "trader",   "name": "Trader",          "emoji": "🤖", "role": "engine",   "message": trader},
+        {"key": "analyst",  "name": "Market Analyst",  "emoji": "📊", "role": "advisory", "message": analyst},
+        {"key": "news",     "name": "News & Sentiment","emoji": "📰", "role": "advisory", "message": news_msg},
+        {"key": "risk",     "name": "Risk Officer",    "emoji": "🛡️", "role": "advisory", "message": risk},
+        {"key": "coach",    "name": "Coach",           "emoji": "🎯", "role": "advisory", "message": coach},
+        {"key": "monitor",  "name": "Model Monitor",   "emoji": "📉", "role": "advisory", "message": monitor},
+        {"key": "exec",     "name": "Execution Reviewer","emoji": "🔍","role": "advisory", "message": exec_rev},
+    ]
+
+
 # rank: BUY first, then by strength/alignment desc
 _SIGNAL_RANK = {"BUY": 0, "HOLD": 1, "SELL": 2}
 

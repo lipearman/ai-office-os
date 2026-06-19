@@ -1,16 +1,22 @@
+import asyncio
+import json
 import uuid
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, delete, update
 
 from app.core.database import get_db
 from app.models.user import User
 from app.models.watchlist import WatchlistItem
 from app.models.paper import PaperTrade
+from app.models.trading_state import TradingAlert, DeskLLMConfig, AlertWebhook
+from app.trading import alert_webhook
 from app.schemas.trading import (
     WatchlistItemOut, WatchlistItemCreate, WatchlistItemUpdate, PaperOpen,
 )
 from app.trading.paper import fill_open, close_pnl, unrealized, paper_stats
+from app.trading.news import fetch_news, aggregate_sentiment
+from app.trading import desk_store
 from datetime import datetime, timezone
 from app.api.deps import get_current_user
 from app.trading.bitkub import BitkubClient, to_tradingview_symbol, TIMEFRAMES
@@ -255,6 +261,467 @@ async def opportunities(
         return {"results": [], "count": 0}
     results = await daily_opportunities(items)
     return {"results": results, "count": len(results)}
+
+
+# ── trading desk (read-only view of worker-computed state) ──────
+@router.get("/desk/workspace/{workspace_id}")
+async def trading_desk(
+    workspace_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """7 trading-desk characters (for /office).
+
+    Read-only: the background worker computes and persists this; here we just
+    return the latest snapshot. If the worker hasn't produced one yet, signal
+    `warming_up` so the UI can show a pending state instead of an error.
+    """
+    snap = await desk_store.get_snapshot(db, workspace_id)
+    if snap is None:
+        return {"characters": [], "status": "warming_up", "computed_at": None}
+    meta = snap.meta or {}
+    # always return a fresh live ticker (with sparkline closes) regardless of snapshot age
+    items = await desk_store._watchlist_items(db, workspace_id)
+    if not items:
+        # fallback: extract symbols from meta.opps
+        opps = meta.get("opps", [])
+        items = [{"symbol": o["symbol"]} for o in opps if o.get("symbol")]
+    live_ticker = await desk_store._live_ticker(items)
+    return {
+        "characters": snap.characters or [],
+        "ticker": live_ticker or meta.get("ticker", {}),
+        "news_agg": meta.get("news_agg", {}),
+        "status": "ready",
+        "computed_at": snap.computed_at.isoformat() if snap.computed_at else None,
+    }
+
+
+# ── desk pipeline definition (LangGraph workflow) ──────────────────
+_DESK_PIPELINE = {
+    "nodes": [
+        {"id": "monitor", "name": "Model Monitor",     "emoji": "📉", "role": "advisory", "description": "Scan หา 10 เหรียญที่ดีที่สุดของวันนี้"},
+        {"id": "analyst", "name": "Market Analyst",    "emoji": "📊", "role": "advisory", "description": "วิเคราะห์ภาพรวมตลาดและแนวโน้ม"},
+        {"id": "news",    "name": "News & Sentiment",  "emoji": "📰", "role": "advisory", "description": "ตรวจสอบข่าว/sentiment ทีละเหรียญ"},
+        {"id": "trader",  "name": "Trader",            "emoji": "🤖", "role": "engine",   "description": "หาจุดเข้าซื้อที่ดีที่สุดสำหรับเหรียญนั้น"},
+        {"id": "risk",    "name": "Risk Officer",      "emoji": "🛡️", "role": "advisory", "description": "ประเมินความเสี่ยงของพอร์ต"},
+        {"id": "exec",    "name": "Execution Reviewer","emoji": "🔍", "role": "advisory", "description": "Backtest กลยุทธ์ ดู WIN/LOSS"},
+        {"id": "coach",   "name": "Coach",             "emoji": "🎯", "role": "advisory", "description": "ปรับกลยุทธ์และระวังความเสี่ยงสูง"},
+        {"id": "summary", "name": "Summary",           "emoji": "📋", "role": "advisory", "description": "สรุปผลของแต่ละเหรียญ"},
+    ],
+    "edges": [
+        {"from": "monitor", "to": "analyst"},
+        {"from": "analyst", "to": "news"},
+        {"from": "news",    "to": "trader"},
+        {"from": "trader",  "to": "risk"},
+        {"from": "risk",    "to": "exec"},
+        {"from": "exec",    "to": "coach"},
+        {"from": "coach",   "to": "news"},
+        {"from": "coach",   "to": "summary"},
+        {"from": "summary", "to": "end"},
+    ],
+}
+
+
+@router.get("/desk/pipeline")
+async def desk_pipeline(
+    workspace_id: str | None = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """LangGraph multi-agent pipeline structure + latest run status."""
+    from app.agents.llm import _FallbackLLM, get_llm
+    from app.core.redis import get_redis
+    from app.trading.desk_store import PIPELINE_RUN_KEY
+    from app.models.agent import Agent
+
+    # override node descriptions from agents table
+    nodes = list(_DESK_PIPELINE["nodes"])
+    if workspace_id:
+        try:
+            ws_uuid = uuid.UUID(workspace_id)
+            agent_res = await db.execute(
+                select(Agent).where(
+                    Agent.workspace_id == ws_uuid,
+                    Agent.agent_type.in_([n["id"] for n in nodes]),
+                )
+            )
+            agent_map = {a.agent_type: a for a in agent_res.scalars().all()}
+            nodes = [
+                {**n, "description": agent_map[n["id"]].description}
+                if n["id"] in agent_map and agent_map[n["id"]].description else n
+                for n in nodes
+            ]
+        except Exception:
+            pass
+
+    llm_ok = not isinstance(get_llm(), _FallbackLLM)
+    result = {**_DESK_PIPELINE, "nodes": nodes, "llm_available": llm_ok, "run": None}
+    if workspace_id:
+        try:
+            r = await get_redis()
+            raw = await r.get(PIPELINE_RUN_KEY.format(workspace_id=workspace_id))
+            if raw:
+                result["run"] = json.loads(raw)
+        except Exception:
+            pass
+    return result
+
+
+# ── agent meeting (post-pipeline discussion) ───────────────────
+@router.post("/desk/workspace/{workspace_id}/meeting")
+async def trigger_meeting(
+    workspace_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Generate agent meeting commentary using latest snapshot data.
+
+    Called by frontend after pipeline completes. Returns {role_key: text}
+    and pushes each as a desk.update with commentary so realtime UI gets it.
+    """
+    from app.models.agent import Agent
+    from app.trading import desk_llm
+    from app.trading.desk_store import get_snapshot, _watchlist_items, _live_ticker
+
+    snap = await get_snapshot(db, workspace_id)
+    if snap is None:
+        raise HTTPException(status_code=404, detail="No snapshot yet")
+
+    meta = snap.meta or {}
+    characters = snap.characters or []
+
+    # per-role LLM overrides
+    agent_res = await db.execute(
+        select(Agent).where(
+            Agent.workspace_id == workspace_id,
+            Agent.agent_type.in_([c["key"] for c in characters if c.get("key")]),
+        )
+    )
+    role_overrides: dict[str, dict] = {}
+    for a in agent_res.scalars().all():
+        cfg = {}
+        if a.model_provider and a.model_provider != "auto":
+            cfg["provider"] = a.model_provider
+        if a.model_name and a.model_name != "auto":
+            cfg["model"] = a.model_name
+        role_overrides[a.agent_type] = cfg
+
+    # include fresh ticker in meta for the meeting
+    items = await _watchlist_items(db, workspace_id)
+    if items:
+        live_ticker = await _live_ticker(items)
+        meta = {**meta, "ticker": live_ticker}
+
+    commentary = await desk_llm.meeting_commentary(characters, meta, role_overrides)
+
+    return {"commentary": commentary}
+
+
+# ── desk chat (ask questions about pipeline data) ──────────────
+_CHAT_SYSTEM = """คุณคือทีมวิเคราะห์การเทรดคริปโตที่มีสมาชิก 7 คน:
+- 📊 Market Analyst: วิเคราะห์แนวโน้มตลาด แนวรับแนวต้าน
+- 📰 News & Sentiment: วิเคราะห์ข่าวและ sentiment
+- 🤖 Trader: วิเคราะห์จุดเข้าซื้อ/ขาย
+- 🛡️ Risk Officer: ประเมินความเสี่ยง
+- 🎯 Coach: ให้คำแนะนำเชิงกลยุทธ์
+- 📉 Model Monitor: วิเคราะห์โอกาสเหรียญ
+- 🔍 Execution Reviewer: ตรวจสอบประสิทธิภาพ
+
+เมื่อมีคำถามจากผู้ใช้ ให้ทุกคนช่วยกันตอบโดยใช้ข้อมูลที่มี แต่ละคนแสดงความเห็นตามบทบาทของตน
+ตอบสั้น กระชับ เป็นธรรมชาติ ภาษาไทย"""
+
+
+@router.post("/desk/workspace/{workspace_id}/chat")
+async def desk_chat(
+    workspace_id: uuid.UUID,
+    payload: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Answer user questions about pipeline data using all agent personas."""
+    from langchain_core.messages import SystemMessage, HumanMessage
+    from app.agents.llm import get_llm
+    from app.trading.desk_store import get_snapshot, _watchlist_items, _live_ticker
+
+    message = (payload.get("message") or "").strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="message is required")
+
+    snap = await get_snapshot(db, workspace_id)
+    if snap is None:
+        raise HTTPException(status_code=404, detail="No snapshot yet")
+
+    meta = snap.meta or {}
+    characters = snap.characters or []
+
+    # build context
+    ctx_lines = ["ข้อมูลล่าสุดจาก Pipeline:"]
+    prices = meta.get("prices", {})
+    if prices:
+        ctx_lines.append("ราคา:")
+        for sym, p in sorted(prices.items()):
+            ctx_lines.append(f"  {sym}: {p:,.2f}")
+
+    ticker = meta.get("ticker", {})
+    if ticker:
+        ctx_lines.append("เปลี่ยนแปลง:")
+        for sym, t in sorted(ticker.items()):
+            chg = t.get("c", 0)
+            ctx_lines.append(f"  {sym}: {'+' if chg >= 0 else ''}{chg:.2f}%")
+
+    opps = meta.get("opps", [])
+    if opps:
+        ctx_lines.append("โอกาสวันนี้:")
+        for o in opps[:5]:
+            ctx_lines.append(f"  {o.get('symbol', '?')}: {o.get('strategy', '?')} win={o.get('win_chance_pct', 0)}%")
+
+    news = meta.get("news_agg", {})
+    assets = news.get("assets", [])
+    if assets:
+        ctx_lines.append("Sentiment:")
+        for a in assets[:3]:
+            ctx_lines.append(f"  {a.get('asset', '?')}: bullish={a.get('bullish', 0)} bearish={a.get('bearish', 0)}")
+
+    stats = meta.get("stats", {})
+    if stats:
+        ctx_lines.append(
+            f"สถิติ: win={stats.get('win_rate', 0):.1f}% "
+            f"profit={stats.get('total_pnl_thb', 0):,.0f} THB "
+            f"trades={stats.get('total_trades', 0)}"
+        )
+
+    ctx_lines.append("ข้อเท็จจริงของสมาชิก:")
+    for c in characters:
+        msg = c.get("message", "")
+        if msg:
+            ctx_lines.append(f"  {c.get('name', c.get('key', '?'))}: {msg}")
+
+    context = "\n".join(ctx_lines)
+
+    try:
+        llm = get_llm()
+        resp = await llm.ainvoke([
+            SystemMessage(content=_CHAT_SYSTEM),
+            HumanMessage(content=f"ข้อมูล Pipeline:\n{context}\n\nคำถามผู้ใช้:\n{message}"),
+        ])
+        answer = resp.content if isinstance(resp.content, str) else str(resp.content)
+    except Exception as e:
+        answer = f"ขออภัย ไม่สามารถตอบได้ในตอนนี้: {str(e)}"
+
+    return {"response": answer, "context": context}
+@router.get("/desk/pipeline/status")
+async def pipeline_status():
+    """Check if the background scheduler + realtime subscriber are running."""
+    from app.trading.scheduler import _scheduler as sched
+    if sched is None:
+        return {"scheduler": "stopped", "jobs": []}
+    jobs = []
+    for j in sched.get_jobs():
+        jobs.append({"id": j.id, "next_run": str(j.next_run_time) if j.next_run_time else None})
+    from app.trading.realtime import _task as rt_task
+    realtime = "running" if (rt_task and not rt_task.done()) else ("done" if rt_task else "not started")
+    return {"scheduler": "running", "jobs": jobs, "realtime": realtime}
+
+
+# ── manual pipeline trigger (fire-and-forget) ──────────────────
+@router.post("/desk/pipeline/trigger")
+async def trigger_pipeline(workspace_id: str):
+    """Start a pipeline run in background and return immediately."""
+    from app.core.database import AsyncSessionLocal
+    from app.trading import desk_store
+
+    async def _run():
+        async with AsyncSessionLocal() as db:
+            try:
+                await desk_store.compute_full(db, uuid.UUID(workspace_id))
+            except Exception:
+                pass
+
+    asyncio.create_task(_run())
+    return {"status": "accepted", "message": "pipeline started in background"}
+
+
+# ── per-role desk LLM config (which provider/model each character uses) ─
+@router.get("/desk/llm-config/workspace/{workspace_id}")
+async def get_desk_llm_config(
+    workspace_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    res = await db.execute(
+        select(DeskLLMConfig).where(DeskLLMConfig.workspace_id == workspace_id)
+    )
+    cfg = res.scalar_one_or_none()
+    return {"roles": (cfg.roles if cfg else {})}
+
+
+@router.put("/desk/llm-config/workspace/{workspace_id}")
+async def set_desk_llm_config(
+    workspace_id: uuid.UUID,
+    payload: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """payload: {"roles": {role_key: {"provider": "...", "model": "..."}}}."""
+    roles = payload.get("roles", {}) if isinstance(payload, dict) else {}
+    res = await db.execute(
+        select(DeskLLMConfig).where(DeskLLMConfig.workspace_id == workspace_id)
+    )
+    cfg = res.scalar_one_or_none()
+    if cfg is None:
+        cfg = DeskLLMConfig(workspace_id=workspace_id, roles=roles)
+        db.add(cfg)
+    else:
+        cfg.roles = roles
+    await db.commit()
+    return {"roles": roles}
+
+
+# ── server-side alerts (detected by the worker, stored in DB) ───
+@router.get("/alerts/workspace/{workspace_id}")
+async def get_alerts(
+    workspace_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Alerts สะสมจาก worker (เตือนแม้ปิดหน้า) + จำนวนที่ยังไม่อ่าน."""
+    res = await db.execute(
+        select(TradingAlert)
+        .where(TradingAlert.workspace_id == workspace_id)
+        .order_by(TradingAlert.created_at.desc())
+        .limit(50)
+    )
+    rows = res.scalars().all()
+    alerts = [
+        {
+            "id": a.id.hex, "symbol": a.symbol, "strategy": a.strategy,
+            "timeframe": a.timeframe, "win_chance_pct": a.win_chance_pct,
+            "label": a.label, "text": a.text, "is_read": a.is_read,
+            "ts": a.created_at.timestamp() if a.created_at else None,
+        }
+        for a in rows
+    ]
+    return {"alerts": alerts, "unread": sum(1 for a in rows if not a.is_read)}
+
+
+@router.post("/alerts/{alert_id}/read", status_code=204)
+async def mark_alert_read(
+    alert_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    await db.execute(
+        update(TradingAlert).where(TradingAlert.id == alert_id).values(is_read=True)
+    )
+    await db.commit()
+
+
+@router.post("/alerts/workspace/{workspace_id}/read-all", status_code=204)
+async def mark_all_alerts_read(
+    workspace_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    await db.execute(
+        update(TradingAlert)
+        .where(TradingAlert.workspace_id == workspace_id, TradingAlert.is_read == False)  # noqa: E712
+        .values(is_read=True)
+    )
+    await db.commit()
+
+
+@router.delete("/alerts/workspace/{workspace_id}", status_code=204)
+async def clear_alerts(
+    workspace_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    await db.execute(
+        delete(TradingAlert).where(TradingAlert.workspace_id == workspace_id)
+    )
+    await db.commit()
+
+
+# ── outbound alert webhook (opt-in; user sets their own URL) ────
+@router.get("/alerts/webhook/workspace/{workspace_id}")
+async def get_alert_webhook(
+    workspace_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    wh = (await db.execute(
+        select(AlertWebhook).where(AlertWebhook.workspace_id == workspace_id)
+    )).scalar_one_or_none()
+    return {"url": wh.url if wh else "", "enabled": wh.enabled if wh else False}
+
+
+@router.put("/alerts/webhook/workspace/{workspace_id}")
+async def set_alert_webhook(
+    workspace_id: uuid.UUID,
+    payload: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    url = (payload.get("url") or "").strip()
+    enabled = bool(payload.get("enabled"))
+    if enabled and not alert_webhook.valid_webhook_url(url):
+        raise HTTPException(status_code=400, detail="URL ต้องขึ้นต้นด้วย http:// หรือ https://")
+    wh = (await db.execute(
+        select(AlertWebhook).where(AlertWebhook.workspace_id == workspace_id)
+    )).scalar_one_or_none()
+    if wh is None:
+        wh = AlertWebhook(workspace_id=workspace_id, url=url, enabled=enabled)
+        db.add(wh)
+    else:
+        wh.url = url
+        wh.enabled = enabled
+    await db.commit()
+    return {"url": url, "enabled": enabled}
+
+
+@router.post("/alerts/webhook/workspace/{workspace_id}/test")
+async def test_alert_webhook(
+    workspace_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    wh = (await db.execute(
+        select(AlertWebhook).where(AlertWebhook.workspace_id == workspace_id)
+    )).scalar_one_or_none()
+    if not wh or not wh.url:
+        raise HTTPException(status_code=400, detail="ยังไม่ได้ตั้งค่า webhook URL")
+    ok = await alert_webhook.post_alerts(
+        wh.url, workspace_id,
+        [{"symbol": "TEST", "text": "🔔 ทดสอบ webhook จาก AI Office OS trading desk"}],
+    )
+    return {"ok": ok}
+
+
+# ── news & sentiment ────────────────────────────────────────────
+@router.get("/news")
+async def news_all(current_user: User = Depends(get_current_user)):
+    """ข่าวคริปโตล่าสุด + sentiment รายเหรียญ (ทุกเหรียญ)."""
+    items = await fetch_news()
+    agg = aggregate_sentiment(items)
+    return {"items": [i.to_dict() for i in items[:30]], **agg}
+
+
+@router.get("/news/workspace/{workspace_id}")
+async def news_workspace(
+    workspace_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """ข่าว + sentiment กรองเฉพาะเหรียญใน watchlist."""
+    res = await db.execute(
+        select(WatchlistItem).where(WatchlistItem.workspace_id == workspace_id)
+    )
+    assets = sorted({w.symbol.split("_")[0] for w in res.scalars().all()})
+    items = await fetch_news()
+    agg = aggregate_sentiment(items, assets or None)
+    # only headlines mentioning watchlist assets
+    rel = [i for i in items if not assets or any(a in assets for a in i.assets)]
+    return {"items": [i.to_dict() for i in rel[:30]], "assets_filter": assets, **agg}
 
 
 # ── paper trading ───────────────────────────────────────────────

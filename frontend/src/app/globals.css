@@ -14,6 +14,8 @@
   box-sizing: border-box;
 }
 
+html { color-scheme: dark; }
+
 body {
   /* Phaser "Create" desktop: blue (sky) -> teal -> green (grass) gradient,
      with neon pink/cyan corner glows floating on top */

@@ -23,9 +23,22 @@ class Settings(BaseSettings):
 
     # LLM
     OPENAI_API_KEY: str = ""
+    ANTHROPIC_API_KEY: str = ""
     GEMINI_API_KEY: str = ""
     OPENROUTER_API_KEY: str = ""
-    OLLAMA_BASE_URL: str = "http://localhost:11434"
+    OPENROUTER_MODEL: str = ""   # e.g. "meta-llama/llama-3.1-8b-instruct" — override the default OpenRouter model
+    OLLAMA_BASE_URL: str = "http://llm-server:11434"
+    # default LLM when an agent doesn't specify one (provider == auto/empty).
+    # Self-hosted Ollama by default so the app needs no cloud API key.
+    DEFAULT_LLM_PROVIDER: str = "ollama"
+    DEFAULT_LLM_MODEL: str = "qwen2.5:7b-instruct"
+    # kill-switch for LLM 'color commentary' on the trading desk (worker calls
+    # the LLM on each heavy tick when a provider is configured)
+    DESK_LLM_ENABLED: bool = True
+    # run the desk worker (APScheduler) inside the API process. Set False when
+    # running a dedicated worker (`python -m app.trading.worker`) so the ticks
+    # don't run twice.
+    RUN_WORKER_IN_PROCESS: bool = True
 
     # CORS
     ALLOWED_ORIGINS: list[str] = [

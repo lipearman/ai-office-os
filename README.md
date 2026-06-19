@@ -1,12 +1,11 @@
 # 🏢 AI Office OS
 
 > **Operating System for AI Workforce**
-> A multi-agent platform where AI agents live and work together in a 2D RPG-style office — chat, run tools, search knowledge, build workflows, hold meetings, and remember.
+> A multi-agent platform where AI agents live and work together — chat, run tools, trade crypto, search knowledge, build workflows, hold meetings, and remember.
 
 ![Version](https://img.shields.io/badge/version-0.1.0-blue)
 ![Next.js](https://img.shields.io/badge/Next.js-15-black)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688)
-![Phaser](https://img.shields.io/badge/Phaser-3.90-845EC2)
 ![Python](https://img.shields.io/badge/Python-3.12-3776AB)
 ![E2E](https://img.shields.io/badge/E2E-16%2F16%20passing-success)
 
@@ -17,9 +16,9 @@
 AI Office OS is **not** just a chatbot. It's a full platform that combines:
 
 - 🤖 **AI Team** — 8 specialized agents (Reception, CEO, PM, BA, Dev, DBA, QA, RAG) with distinct personas, powered by LangGraph
-- 🎮 **2D RPG Office** — a Phaser game world where agent sprites walk around, with an in-browser editor (background, furniture, character sprite uploads, collision)
+- 🏢 **Trading Office** — live crypto trading desk with 7 agent roles, real-time pipeline, price sparklines, news sentiment, agent meetings, and desk chat
 - 💬 **Realtime Chat** — talk to any agent, SSE streaming, WebSocket presence/typing
-- 🔧 **Tool System** — 7 built-in tools (HTTP, webhook, n8n, SQL, GitHub, calculator, datetime) with a human-approval gate
+- 🔧 **Tool System** — built-in tools (HTTP, webhook, n8n, SQL, GitHub, calculator, datetime) with a human-approval gate
 - 📚 **RAG Knowledge Hub** — upload PDF/TXT/MD, semantic search with embeddings
 - ⚡ **Visual Workflow Builder** — React Flow drag-and-drop agent/tool pipelines
 - 🧠 **Long-term Memory** — agents recall relevant past interactions automatically
@@ -33,12 +32,12 @@ AI Office OS is **not** just a chatbot. It's a full platform that combines:
 
 | Layer | Tech |
 |-------|------|
-| **Frontend** | Next.js 15, TypeScript, TailwindCSS, Zustand, React Flow |
-| **Office Game** | Phaser 3.90 (2D RPG renderer) |
+| **Frontend** | Next.js 15, TypeScript, TailwindCSS, Zustand, React Flow, Recharts |
 | **Backend** | FastAPI, SQLAlchemy (async), LangGraph, LangChain |
-| **AI / LLM** | OpenAI · Gemini · OpenRouter · Ollama (auto-detected; graceful fallback with no key) |
+| **AI / LLM** | OpenAI · Gemini · Anthropic · OpenRouter · Ollama (auto-detected; graceful fallback with no key) |
 | **Database** | PostgreSQL 16 (embeddings stored as JSON — no pgvector required) |
-| **Realtime** | WebSocket + Server-Sent Events |
+| **Realtime** | WebSocket (Redis pub/sub) + Server-Sent Events |
+| **Crypto** | Bitkub API (ticker, OHLCV, order book) — Bangkok-based exchange |
 
 ---
 
@@ -50,21 +49,23 @@ ai-office-os/
 │   └── app/
 │       ├── main.py               # entry point, routers
 │       ├── core/                 # config, db, security, rbac
-│       ├── models/               # 18 SQLAlchemy models
+│       ├── models/               # 22 SQLAlchemy models
 │       ├── api/v1/               # auth, agents, tools, knowledge,
 │       │                         #   workflows, memories, meetings,
-│       │                         #   observability, audit, …
+│       │                         #   trading, observability, audit, …
 │       ├── agents/               # LangGraph runtime (graph, prompts, tools, llm)
 │       ├── tools/                # tool registry + built-ins
+│       ├── trading/              # desk worker, pipeline graph, nodes,
+│       │                         #   scheduler, paper trading, Bitkub client
 │       ├── rag/                  # embeddings, knowledge search, memory
 │       └── observability/        # usage tracker
 ├── frontend/                     # Next.js app
-│   ├── public/assets/            # game sprites (maps, furniture, characters)
 │   └── src/
-│       ├── app/(dashboard)/      # 13 pages
-│       ├── components/phaser/    # Phaser office scene + editor bridge
+│       ├── app/(dashboard)/      # 14 pages (including trading + office)
+│       ├── components/office/    # TradingOffice, DraggableBox, bubble engine
+│       ├── components/trading/   # PipelineView, watchlist, positions
 │       └── store/                # Zustand stores
-├── tools/                        # PIL asset generators + e2e_test.ps1
+├── tools/                        # e2e_test.ps1 + generators
 └── docs/                         # master plan + reference art
 ```
 
@@ -92,8 +93,8 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 ### Frontend
 ```bash
 cd frontend
-npm install --legacy-peer-deps
-npm run dev
+pnpm install
+pnpm dev
 ```
 
 Open **http://localhost:3000** — API docs at **http://localhost:8000/docs**.
@@ -137,6 +138,41 @@ Without any LLM key, agents return a friendly fallback and embeddings use a dete
 
 ---
 
+## 🏢 Trading Office
+
+The **Trading Office** (`/office`) is a live crypto trading command center powered by a background worker pipeline.
+
+### Desk Agents (7 roles)
+
+| Agent | Emoji | Role |
+|-------|-------|------|
+| **Trader** | 🤖 | Entry/exit analysis, entry zones |
+| **Market Analyst** | 📊 | Market bias, support/resistance |
+| **News & Sentiment** | 📰 | News aggregation, sentiment scoring |
+| **Risk Officer** | 🛡️ | Portfolio risk, position sizing |
+| **Coach** | 🎯 | Strategic advice, discipline |
+| **Model Monitor** | 📉 | Opportunity scanning, win rate |
+| **Execution Reviewer** | 🔍 | Backtest verification, quality check |
+
+### How it works
+
+1. **Watchlist** — configure symbols on the Trading page (`/trading`)
+2. **Scheduler** — lightweight tick (20s) updates prices/sparklines; heavy tick (180s) runs the full pipeline
+3. **Pipeline** — LangGraph walks through Monitor → Analyst → News → Trader → Risk → Exec → Coach per coin, then Summary
+4. **Agent Meeting** — after pipeline completes, all 7 agents generate LLM-powered meeting commentary displayed as speech bubbles
+5. **Desk Chat** — ask questions about pipeline data; all agents collaborate on the answer
+6. **Floating Panels** — price table with sparklines, news headlines with sentiment indicators, pipeline feed; all draggable & minimizable
+
+### Per-agent LLM Config
+
+Each desk agent can use a different LLM provider/model via the edit-mode panel, or set all at once.
+
+### Screenshots
+
+Open `http://localhost:3000/office` after login and completing a pipeline run.
+
+---
+
 ## 🎮 Office Editor
 
 Open **Office → "แก้ไข Office"**:
@@ -160,13 +196,13 @@ Covers auth, agents, tools, RAG, memory, workflows, observability, RBAC, audit, 
 
 ## 📡 API Overview
 
-`/api/v1/` — `auth` · `workspaces` (+members) · `agents` · `offices` · `conversations` (chat + SSE) · `tools` · `knowledge` · `workflows` · `memories` · `meetings` · `observability` · `audit` · `uploads` · `seed` · WebSocket `/ws/{workspace_id}`
+`/api/v1/` — `auth` · `workspaces` (+members) · `agents` · `offices` · `conversations` (chat + SSE) · `tools` · `knowledge` · `workflows` · `memories` · `meetings` · `trading` (watchlist, paper trades, desk snapshot, desk LLM config, alerts, webhooks, agent meeting, desk chat) · `observability` · `audit` · `uploads` · `seed` · WebSocket `/ws/{workspace_id}`
 
 Full interactive docs: **http://localhost:8000/docs**
 
 ---
 
-## 🗺️ Roadmap — all 12 phases shipped ✅
+## 🗺️ Roadmap — all 13 phases shipped ✅
 
 | Phase | Feature | Status |
 |-------|---------|--------|
@@ -176,11 +212,12 @@ Full interactive docs: **http://localhost:8000/docs**
 | 5 | Tool system | ✅ |
 | 6 | RAG & Knowledge Hub | ✅ |
 | 7 | Visual Workflow Builder | ✅ |
-| 8 | Office Builder (Phaser editor) | ✅ |
+| 8 | Office Editor | ✅ |
 | 9 | Memory system | ✅ |
 | 10 | Observability | ✅ |
 | 11 | Security (RBAC + audit) | ✅ |
 | 12 | Advanced AI (AI Meeting) | ✅ |
+| 13 | **Trading Desk** — pipeline, realtime, paper trading, agent meeting, desk chat | ✅ |
 
 ---
 

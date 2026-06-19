@@ -102,7 +102,7 @@ export function ChatPanel({ open, onClose }: ChatPanelProps) {
           <div className="flex h-full flex-col">
             <div className="flex-1 overflow-y-auto py-2">
               {activeConv?.messages
-                .filter((m) => m.role !== "system" && m.role !== "SYSTEM")
+                .filter((m) => m.role.toUpperCase() !== "SYSTEM")
                 .map((msg) => (
                   <ChatMessage
                     key={msg.id}

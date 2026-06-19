@@ -18,6 +18,7 @@ langchain-community>=0.3.1
 langchain-openai>=1.2.0
 langchain-google-genai>=4.0.0
 langchain-ollama>=1.0.0
+langchain-anthropic>=0.3.0
 langgraph>=1.0.0
 langgraph-checkpoint>=2.0.0
 openai>=1.51.0
@@ -30,3 +31,10 @@ pypdf>=5.0.0
 # trading / quant core
 pandas>=2.2.0
 numpy>=2.0.0
+scikit-learn>=1.5.0
+xgboost>=2.1.0
+feedparser>=6.0.0
+APScheduler>=3.10.0
+# tests
+pytest>=8.0.0
+pytest-asyncio>=0.23.0

@@ -15,6 +15,8 @@ async def run_agent(
     conversation_id: str,
     history: list[dict],
     memory_context: str = "",
+    model_provider: str = "auto",
+    model_name: str = "auto",
 ) -> str:
     """Run the multi-agent graph and return the AI reply."""
     graph = get_graph()
@@ -39,6 +41,8 @@ async def run_agent(
         "agent_type":      agent_type,
         "agent_id":        agent_id,
         "agent_name":      agent_name,
+        "model_provider":  model_provider,
+        "model_name":      model_name,
         "user_id":         user_id,
         "conversation_id": conversation_id,
         "current_agent":   agent_type,
@@ -69,6 +73,8 @@ async def stream_agent(
     conversation_id: str,
     history: list[dict],
     memory_context: str = "",
+    model_provider: str = "auto",
+    model_name: str = "auto",
 ):
     """Stream agent response token by token."""
     from app.agents.llm import get_llm
@@ -76,7 +82,7 @@ async def stream_agent(
     from langchain_core.messages import SystemMessage
 
     system_prompt = AGENT_PROMPTS.get(agent_type, AGENT_PROMPTS["reception"])
-    llm = get_llm()
+    llm = get_llm(model_provider, model_name)
 
     lc_messages = [SystemMessage(content=system_prompt)]
     if memory_context:
