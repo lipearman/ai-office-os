@@ -1,0 +1,85 @@
+# Podman deployment for this machine — host ports 9002+ (9000/9001 are taken).
+# Code is baked into the images (no bind mounts) so it runs cleanly on the
+# WSL podman machine. Bring up:  podman compose -f docker-compose.podman.yml up -d --build
+#
+#   frontend  -> http://localhost:9002   (open this)
+#   backend   -> http://localhost:9003   (API + /docs)
+#   postgres  -> localhost:9004
+#   redis     -> localhost:9005
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: aioffice_pg
+    environment:
+      POSTGRES_USER: aioffice
+      POSTGRES_PASSWORD: aioffice_secret
+      POSTGRES_DB: aioffice_db
+    ports:
+      - "9004:5432"
+    volumes:
+      - aioffice_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aioffice"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: aioffice_redis
+    ports:
+      - "9005:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: aioffice_backend
+    environment:
+      DATABASE_URL: postgresql+asyncpg://aioffice:aioffice_secret@postgres:5432/aioffice_db
+      REDIS_URL: redis://redis:6379
+      SECRET_KEY: dev_secret_key_change_in_production
+      ENVIRONMENT: development
+      # frontend's browser origin must be allowed for CORS
+      ALLOWED_ORIGINS: '["http://localhost:9002","http://localhost:3000"]'
+      # self-hosted Ollama (best-effort; falls back to deterministic if unreachable from the container)
+      OLLAMA_BASE_URL: http://llm-server:11434
+      DEFAULT_LLM_PROVIDER: ollama
+      DEFAULT_LLM_MODEL: qwen2.5:7b-instruct
+      # desk market discovery — scan top-N THB pairs by volume on top of watchlist
+      DESK_SCAN_ENABLED: "true"
+      DESK_SCAN_TOP_N: "20"
+    ports:
+      - "9003:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # apply migrations + seed the demo/test account, then serve
+    command: >
+      sh -c "alembic upgrade head &&
+             python seed_demo.py &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000"
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: aioffice_frontend
+    environment:
+      # browser-facing URLs → the published backend port on the host
+      NEXT_PUBLIC_API_URL: http://localhost:9003
+      NEXT_PUBLIC_WS_URL: ws://localhost:9003
+    ports:
+      - "9002:3000"
+    depends_on:
+      - backend
+
+volumes:
+  aioffice_pgdata:

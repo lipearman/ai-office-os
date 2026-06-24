@@ -1,8 +1,8 @@
-fastapi==0.115.0
-uvicorn[standard]==0.30.6
-pydantic[email]==2.9.2
-pydantic-settings==2.5.2
-sqlalchemy==2.0.35
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.6
+pydantic[email]>=2.9.2
+pydantic-settings>=2.5.2
+sqlalchemy>=2.0.35
 asyncpg==0.29.0
 alembic==1.13.3
 redis==5.1.1
@@ -10,17 +10,21 @@ python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
 bcrypt==4.2.1
 python-multipart==0.0.12
-httpx==0.27.2
-celery==5.4.0
-websockets==13.1
-langchain>=0.3.1
-langchain-community>=0.3.1
-langchain-openai>=1.2.0
-langchain-google-genai>=4.0.0
-langchain-ollama>=1.0.0
-langchain-anthropic>=0.3.0
-langgraph>=1.0.0
-langgraph-checkpoint>=2.0.0
+httpx>=0.28.1
+celery>=5.4.0
+websockets>=13.1
+# the `langchain` umbrella + `langchain-community` are intentionally absent — the
+# app imports only the provider packages + langchain-core + langgraph, and the
+# laggard community package forces an unsolvable langchain-core conflict.
+# Pinned to a known-consistent set (matches the working venv) so pip doesn't
+# backtrack through the whole langchain version space on a clean install.
+langchain-core==1.4.7
+langchain-openai==1.2.2
+langchain-google-genai==4.2.4
+langchain-ollama==1.1.0
+langchain-anthropic==1.4.6
+langgraph==1.2.4
+langgraph-checkpoint==4.1.1
 openai>=1.51.0
 anthropic>=0.35.0
 pgvector==0.3.5
@@ -30,7 +34,7 @@ email-validator>=2.2.0
 pypdf>=5.0.0
 # trading / quant core
 pandas>=2.2.0
-numpy>=2.0.0
+numpy>=1.26,<2.0
 scikit-learn>=1.5.0
 xgboost>=2.1.0
 feedparser>=6.0.0
