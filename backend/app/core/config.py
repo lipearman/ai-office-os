@@ -43,6 +43,12 @@ class Settings(BaseSettings):
     # of the watchlist, so movers surface automatically. 0 / False = watchlist only.
     DESK_SCAN_ENABLED: bool = True
     DESK_SCAN_TOP_N: int = 20
+    # auto paper-trading: worker opens trades on fresh setups + closes on
+    # stop/target. OFF by default (turning it on lets the worker trade on its own).
+    AUTO_PAPER_ENABLED: bool = False
+    AUTO_PAPER_MAX_POSITIONS: int = 5
+    AUTO_PAPER_SIZE_THB: float = 1000.0
+    AUTO_PAPER_MIN_WIN_PCT: float = 55.0
 
     # CORS
     ALLOWED_ORIGINS: list[str] = [

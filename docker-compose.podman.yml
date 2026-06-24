@@ -54,6 +54,11 @@ services:
       # desk market discovery — scan top-N THB pairs by volume on top of watchlist
       DESK_SCAN_ENABLED: "true"
       DESK_SCAN_TOP_N: "20"
+      # auto paper-trading — worker opens/closes simulated trades on its own
+      AUTO_PAPER_ENABLED: "true"
+      AUTO_PAPER_MAX_POSITIONS: "5"
+      AUTO_PAPER_SIZE_THB: "1000"
+      AUTO_PAPER_MIN_WIN_PCT: "55"
     ports:
       - "9003:8000"
     depends_on:

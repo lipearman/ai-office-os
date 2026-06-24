@@ -142,6 +142,7 @@ from app.trading.paper import unrealized, paper_stats
 from app.trading.news import fetch_news, aggregate_sentiment
 from app.trading.bitkub import BitkubClient, to_market_symbol, to_tradingview_symbol
 from app.trading import desk_llm
+from app.trading import auto_trader
 from app.trading.graph import get_graph
 from app.trading.state import DeskState
 from app.core.config import settings
@@ -476,6 +477,14 @@ async def compute_full(db: AsyncSession, workspace_id) -> DeskSnapshot:
     snap.meta = meta
     snap.computed_at = now
     snap.priced_at = now
+
+    # auto paper-trading (opt-in): close hit stop/target, then open fresh setups
+    try:
+        await auto_trader.auto_close(db, workspace_id, prices)
+        await auto_trader.auto_open(db, workspace_id, opps, prices)
+    except Exception as e:
+        log.warning("auto_paper.heavy_failed", error=str(e))
+
     await db.commit()
     await _publish(workspace_id, snap.characters, ticker, meta.get("news_agg"))
 
@@ -527,6 +536,13 @@ async def refresh_prices(db: AsyncSession, workspace_id) -> DeskSnapshot | None:
     meta["prices"] = prices
     snap.meta = meta
     snap.priced_at = datetime.now(timezone.utc)
+
+    # auto paper-trading (opt-in): responsive stop/target exits on the 20s tick
+    try:
+        await auto_trader.auto_close(db, workspace_id, prices)
+    except Exception as e:
+        log.warning("auto_paper.fast_failed", error=str(e))
+
     await db.commit()
     # characters unchanged → push only the refreshed live numbers
     await _publish(workspace_id, snap.characters, ticker, meta.get("news_agg"))
