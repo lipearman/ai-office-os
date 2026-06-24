@@ -11,10 +11,13 @@ The API only reads the snapshots these jobs write.
 """
 from __future__ import annotations
 
+import asyncio
+
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy import select
 import structlog
 
+from app.core.config import settings
 from app.core.database import AsyncSessionLocal
 from app.models.watchlist import WatchlistItem
 from app.models.trading_state import DeskSnapshot
@@ -53,7 +56,16 @@ async def heavy_tick() -> None:
     for ws in ws_ids:
         try:
             async with AsyncSessionLocal() as db:
-                await desk_store.compute_full(db, ws)
+                # watchdog: cancel a stuck compute so the next tick can run
+                # (otherwise a hung LLM/HTTP call blocks the job forever and
+                # APScheduler skips every later run — "ran once then stopped")
+                await asyncio.wait_for(
+                    desk_store.compute_full(db, ws),
+                    timeout=settings.HEAVY_TICK_TIMEOUT_SECONDS,
+                )
+        except asyncio.TimeoutError:
+            log.warning("desk_heavy_ws_timeout", workspace=str(ws),
+                        timeout=settings.HEAVY_TICK_TIMEOUT_SECONDS)
         except Exception as e:
             log.warning("desk_heavy_ws_failed", workspace=str(ws), error=str(e))
 

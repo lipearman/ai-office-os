@@ -301,6 +301,15 @@ async def compute_full(db: AsyncSession, workspace_id) -> DeskSnapshot:
     positions = await _positions(db, workspace_id, prices)
     stats = await _stats(db, workspace_id)
 
+    # auto paper-trading (opt-in) — run EARLY (before the slow LangGraph/LLM) and
+    # commit immediately, so a watchdog cancel of the graph can't prevent trades
+    try:
+        await auto_trader.auto_close(db, workspace_id, prices)
+        await auto_trader.auto_open(db, workspace_id, opps, prices)
+        await db.commit()
+    except Exception as e:
+        log.warning("auto_paper.heavy_failed", error=str(e))
+
     assets = sorted({w["symbol"].split("_")[0] for w in items})
     news_items = await fetch_news()
     news_agg = aggregate_sentiment(news_items, assets or None)
@@ -477,14 +486,6 @@ async def compute_full(db: AsyncSession, workspace_id) -> DeskSnapshot:
     snap.meta = meta
     snap.computed_at = now
     snap.priced_at = now
-
-    # auto paper-trading (opt-in): close hit stop/target, then open fresh setups
-    try:
-        await auto_trader.auto_close(db, workspace_id, prices)
-        await auto_trader.auto_open(db, workspace_id, opps, prices)
-    except Exception as e:
-        log.warning("auto_paper.heavy_failed", error=str(e))
-
     await db.commit()
     await _publish(workspace_id, snap.characters, ticker, meta.get("news_agg"))
 

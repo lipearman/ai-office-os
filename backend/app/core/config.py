@@ -49,6 +49,15 @@ class Settings(BaseSettings):
     AUTO_PAPER_MAX_POSITIONS: int = 5
     AUTO_PAPER_SIZE_THB: float = 1000.0
     AUTO_PAPER_MIN_WIN_PCT: float = 55.0
+    # require a fresh entry signal (signal_today) to auto-open. False = open the
+    # top-ranked opportunities by score even without a same-day signal (more
+    # aggressive; useful for demos / always-in strategies).
+    AUTO_PAPER_REQUIRE_SIGNAL: bool = True
+    # per-LLM-call timeout (s) — stops a hung Ollama call from blocking a tick
+    LLM_TIMEOUT_SECONDS: float = 30.0
+    # overall heavy-tick watchdog (s) — cancel a stuck compute so the next tick
+    # can run (prevents "ran once then stopped" from a permanently hung job)
+    HEAVY_TICK_TIMEOUT_SECONDS: float = 150.0
 
     # CORS
     ALLOWED_ORIGINS: list[str] = [

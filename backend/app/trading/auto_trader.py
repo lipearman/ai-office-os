@@ -46,7 +46,7 @@ async def auto_open(db: AsyncSession, workspace_id, opps: list[dict], prices: di
     for o in opps:
         if slots <= 0:
             break
-        if not o.get("signal_today"):
+        if settings.AUTO_PAPER_REQUIRE_SIGNAL and not o.get("signal_today"):
             continue
         if (o.get("win_chance_pct") or 0) < settings.AUTO_PAPER_MIN_WIN_PCT:
             continue

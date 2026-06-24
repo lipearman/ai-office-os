@@ -1,8 +1,10 @@
+import asyncio
 import json
 import structlog
 from langchain_core.messages import SystemMessage, HumanMessage
 from app.agents.llm import get_llm, _FallbackLLM
 from app.trading.state import DeskState
+from app.core.config import settings
 
 log = structlog.get_logger()
 
@@ -19,7 +21,10 @@ async def _llm_call(system: str, user: str, provider: str = "auto", model: str =
         llm = get_llm(provider, model, temperature if temperature is not None else 0.3)
         if isinstance(llm, _FallbackLLM):
             return None
-        resp = await llm.ainvoke([SystemMessage(content=system), HumanMessage(content=user)])
+        resp = await asyncio.wait_for(
+            llm.ainvoke([SystemMessage(content=system), HumanMessage(content=user)]),
+            timeout=settings.LLM_TIMEOUT_SECONDS,
+        )
         return resp.content if isinstance(resp.content, str) else str(resp.content)
     except Exception as e:
         log.warning("desk_node_llm_failed", provider=provider, model=model, error=str(e))
