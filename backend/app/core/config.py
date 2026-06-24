@@ -39,6 +39,10 @@ class Settings(BaseSettings):
     # running a dedicated worker (`python -m app.trading.worker`) so the ticks
     # don't run twice.
     RUN_WORKER_IN_PROCESS: bool = True
+    # desk market discovery: scan the top-N Bitkub THB pairs by 24h volume on top
+    # of the watchlist, so movers surface automatically. 0 / False = watchlist only.
+    DESK_SCAN_ENABLED: bool = True
+    DESK_SCAN_TOP_N: int = 20
 
     # CORS
     ALLOWED_ORIGINS: list[str] = [

@@ -246,17 +246,9 @@ async def opportunities(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """หาเหรียญที่มีโอกาสชนะวันนี้ — ใช้กลยุทธ์ที่ผูกไว้ต่อ symbol แล้วจัดอันดับ."""
-    result = await db.execute(
-        select(WatchlistItem).where(
-            WatchlistItem.workspace_id == workspace_id,
-            WatchlistItem.enabled == True,  # noqa: E712
-        )
-    )
-    items = [
-        {"symbol": w.symbol, "cfg": (w.strategies[0] if w.strategies else None)}
-        for w in result.scalars().all()
-    ]
+    """หาเหรียญที่มีโอกาสชนะวันนี้ — watchlist + market-scan (top-N by volume) → จัดอันดับ."""
+    # same source as the /office desk: watchlist (pinned) + scan discoveries
+    items = await desk_store.watchlist_plus_discovered(db, workspace_id)
     if not items:
         return {"results": [], "count": 0}
     results = await daily_opportunities(items)

@@ -207,10 +207,15 @@ async def daily_opportunities(items: list[dict], concurrency: int = 4) -> list[d
 
     async def one(it: dict) -> dict | None:
         async with sem:
-            return await daily_opportunity(client, it["symbol"], it.get("cfg"))
+            try:
+                return await daily_opportunity(client, it["symbol"], it.get("cfg"))
+            except Exception:
+                # a single bad/illiquid symbol (esp. from market discovery) must
+                # not abort the whole scan
+                return None
 
-    results = await asyncio.gather(*[one(it) for it in items])
-    out = [r for r in results if r]
+    results = await asyncio.gather(*[one(it) for it in items], return_exceptions=True)
+    out = [r for r in results if isinstance(r, dict)]
     # signals-with-today first, then by opportunity score
     out.sort(key=lambda r: (0 if r["signal_today"] else 1, -r["opportunity_score"]))
     return out

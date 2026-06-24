@@ -144,6 +144,7 @@ from app.trading.bitkub import BitkubClient, to_market_symbol, to_tradingview_sy
 from app.trading import desk_llm
 from app.trading.graph import get_graph
 from app.trading.state import DeskState
+from app.core.config import settings
 
 
 def _seed() -> int:
@@ -162,6 +163,53 @@ async def _watchlist_items(db: AsyncSession, workspace_id) -> list[dict]:
         {"symbol": w.symbol, "cfg": (w.strategies[0] if w.strategies else None)}
         for w in res.scalars().all()
     ]
+
+
+async def _discovered_symbols(limit: int) -> list[str]:
+    """Market discovery: top-N Bitkub THB pairs by 24h volume (one ticker call).
+
+    The desk scans these on top of the watchlist so good movers surface without
+    being added by hand.
+    """
+    if limit <= 0:
+        return []
+    try:
+        ticker = await BitkubClient().ticker()
+        if not isinstance(ticker, dict):
+            return []
+        stable = {"USDT", "USDC", "BUSD", "DAI", "TUSD", "FDUSD"}
+        rows: list[tuple[str, float]] = []
+        for mk, rec in ticker.items():
+            if not isinstance(mk, str) or not mk.startswith("THB_") or not isinstance(rec, dict):
+                continue
+            try:
+                tv = to_tradingview_symbol(mk)
+            except Exception:
+                continue
+            # keep only proper BASE_THB pairs; skip stablecoins (no trading signal)
+            if not tv.endswith("_THB") or tv.split("_")[0] in stable:
+                continue
+            vol = rec.get("quoteVolume") or rec.get("baseVolume") or 0
+            rows.append((tv, float(vol)))
+        rows.sort(key=lambda r: -r[1])
+        return [s for s, _ in rows[:limit]]
+    except Exception:
+        return []
+
+
+async def watchlist_plus_discovered(db: AsyncSession, workspace_id) -> list[dict]:
+    """Watchlist items (pinned) + market-scan discoveries (top-N by volume).
+
+    Shared by the /office desk and the /trading opportunities endpoint so both
+    surface the same scan-discovered movers.
+    """
+    items = await _watchlist_items(db, workspace_id)
+    if settings.DESK_SCAN_ENABLED:
+        wl = {it["symbol"] for it in items}
+        discovered = await _discovered_symbols(settings.DESK_SCAN_TOP_N)
+        items = items + [{"symbol": s, "cfg": None, "discovered": True}
+                         for s in discovered if s not in wl]
+    return items
 
 
 async def _live_prices(items: list[dict]) -> dict[str, float]:
@@ -245,7 +293,8 @@ async def get_snapshot(db: AsyncSession, workspace_id) -> DeskSnapshot | None:
 
 async def compute_full(db: AsyncSession, workspace_id) -> DeskSnapshot:
     """Heavy tick: full analysis → LangGraph pipeline → upsert snapshot + detect alerts."""
-    items = await _watchlist_items(db, workspace_id)
+    # watchlist (pinned) + market-scan discoveries (top-N by volume)
+    items = await watchlist_plus_discovered(db, workspace_id)
     opps = await daily_opportunities(items) if items else []
     prices = await _live_prices(items)
     positions = await _positions(db, workspace_id, prices)
@@ -441,40 +490,44 @@ async def compute_full(db: AsyncSession, workspace_id) -> DeskSnapshot:
 
 
 async def refresh_prices(db: AsyncSession, workspace_id) -> DeskSnapshot | None:
-    """Cheap tick: refresh prices + unrealized PnL only, reusing stored analysis."""
+    """Cheap tick: refresh live prices ONLY, never rebuild the node/character
+    structure.
+
+    The heavy tick decides the desk layout (LangGraph coin-nodes); the fast tick
+    must not swap it for the deterministic 7-role layout — otherwise the desk
+    flips format every ~20s. So here we just update the last price / %change in
+    the stored ticker (one ticker call, no per-symbol OHLC, no build_desk) and
+    leave `snap.characters` untouched.
+    """
     snap = await get_snapshot(db, workspace_id)
     if snap is None or not snap.meta:
         return None  # nothing computed yet — wait for the heavy tick
     meta = snap.meta
 
-    # when the LangGraph pipeline is active, don't rebuild characters
-    # (preserves LLM decision output; prices refresh on the next heavy tick)
-    if meta.get("graph_active"):
+    try:
+        raw = await BitkubClient().ticker()
+    except Exception:
+        raw = None
+    if not isinstance(raw, dict):
         snap.priced_at = datetime.now(timezone.utc)
         await db.commit()
         return snap
 
-    # deterministic mode: rebuild messages with fresh prices, keep commentary
-    items = await _watchlist_items(db, workspace_id)
-    prices = await _live_prices(items)
-    if not prices:
-        return snap
-    positions = await _positions(db, workspace_id, prices)
-    prev_commentary = {c.get("key"): c.get("commentary") for c in (snap.characters or [])}
-    characters = build_desk(
-        meta.get("opps", []), positions, meta.get("stats", {}),
-        meta.get("news_agg", {}), prices, _seed(),
-    )
-    for c in characters:
-        cm = prev_commentary.get(c["key"])
-        if cm:
-            c["commentary"] = cm
-    meta["prices"] = prices
-    ticker = await _live_ticker(items)
+    ticker = dict(meta.get("ticker") or {})
+    prices = dict(meta.get("prices") or {})
+    for sym, entry in ticker.items():
+        rec = raw.get(to_market_symbol(sym))
+        if isinstance(rec, dict) and rec.get("last") is not None:
+            p = float(rec["last"])
+            prices[sym] = p
+            if isinstance(entry, dict):
+                entry["p"] = p
+                entry["c"] = float(rec.get("percentChange", entry.get("c", 0)))
     meta["ticker"] = ticker
-    snap.characters = characters
+    meta["prices"] = prices
     snap.meta = meta
     snap.priced_at = datetime.now(timezone.utc)
     await db.commit()
+    # characters unchanged → push only the refreshed live numbers
     await _publish(workspace_id, snap.characters, ticker, meta.get("news_agg"))
     return snap
