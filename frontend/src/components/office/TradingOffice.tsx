@@ -110,7 +110,11 @@ export default function TradingOffice({ officeName }: Props) {
 
   // ── pipeline feed ──
   const [pipelineSteps, setPipelineSteps] = useState<{ node_id: string; report?: string; status: string; ts: number }[]>([]);
-  const [showPipelineFeed, setShowPipelineFeed] = useState(true);
+  // เริ่มต้นเปิดเฉพาะ Symbols — box อื่นกดเปิดเองจาก toolbar
+  const [showPipelineFeed, setShowPipelineFeed] = useState(false);
+  const [showSymbols, setShowSymbols] = useState(true);
+  const [showNews, setShowNews] = useState(false);
+  const [showChat, setShowChat] = useState(false);
   const pipelineRunRef = useRef<string>("idle");
   const [rankedCoins, setRankedCoins] = useState<string[]>([]);
   const [tickerMap, setTickerMap] = useState<Record<string, { s: string; p: number; c: number; v: number; h: number; l: number; closes?: number[] }>>({});
@@ -397,9 +401,21 @@ export default function TradingOffice({ officeName }: Props) {
                 title="Active bubbles">
                 💬 {Object.keys(bubbles).length}
               </span>
+              <button onClick={() => setShowSymbols((s) => !s)}
+                className={`rounded-md border px-2 py-1 text-[10px] ${showSymbols ? "border-accent-400 text-accent-300" : "border-white/15 text-white/70"} hover:bg-white/10`}>
+                {showSymbols ? "⊟ Symbols" : "⊞ Symbols"}
+              </button>
               <button onClick={() => setShowPipelineFeed((s) => !s)}
                 className={`rounded-md border px-2 py-1 text-[10px] ${showPipelineFeed ? "border-accent-400 text-accent-300" : "border-white/15 text-white/70"} hover:bg-white/10`}>
                 {showPipelineFeed ? "⊟ Pipeline" : "⊞ Pipeline"}
+              </button>
+              <button onClick={() => setShowNews((s) => !s)}
+                className={`rounded-md border px-2 py-1 text-[10px] ${showNews ? "border-accent-400 text-accent-300" : "border-white/15 text-white/70"} hover:bg-white/10`}>
+                {showNews ? "⊟ News" : "⊞ News"}
+              </button>
+              <button onClick={() => setShowChat((s) => !s)}
+                className={`rounded-md border px-2 py-1 text-[10px] ${showChat ? "border-accent-400 text-accent-300" : "border-white/15 text-white/70"} hover:bg-white/10`}>
+                {showChat ? "⊟ Chat" : "⊞ Chat"}
               </button>
               <button onClick={load} className="rounded-md border border-white/15 px-2 py-1 text-white/70 hover:bg-white/10">รีเฟรช</button>
               <button onClick={enterEdit} className="flex items-center gap-1 rounded-md bg-primary-500 px-3 py-1 font-semibold text-white hover:bg-primary-600">
@@ -518,7 +534,7 @@ export default function TradingOffice({ officeName }: Props) {
         {/* pipeline feed panel (view mode) */}
         {!editMode && (
           <>
-            {rankedCoins.length > 0 && (
+            {showSymbols && rankedCoins.length > 0 && (
               <DraggableBox title="📊 Symbols" defaultPos={{ x: 12, y: 300 }} storageKey="office-symbols-box">
                 <div className="min-w-[340px]">
                 <div className="grid grid-cols-[1fr_auto_auto_1fr] gap-x-2 px-3 py-1.5 text-[9px] font-semibold text-white/40 border-b border-white/10">
@@ -596,7 +612,7 @@ export default function TradingOffice({ officeName }: Props) {
         )}
 
         {/* news floating panel */}
-        {!editMode && newsAgg?.assets && newsAgg.assets.length > 0 && (
+        {!editMode && showNews && newsAgg?.assets && newsAgg.assets.length > 0 && (
           <DraggableBox title="📰 News" defaultPos={{ x: 12, y: 12 }} storageKey="office-news-box">
             <div className="flex-1 space-y-1 overflow-y-auto p-2">
               {newsAgg.assets.flatMap((a) => a.headlines).filter(Boolean).slice(0, 15).map((h, i) => (
@@ -613,7 +629,7 @@ export default function TradingOffice({ officeName }: Props) {
         )}
 
         {/* chat box */}
-        {!editMode && (
+        {!editMode && showChat && (
           <DraggableBox title="💬 Desk Chat" defaultPos={{ x: 280, y: 12 }} storageKey="office-chat-box"
             className="w-80">
             <div className="flex flex-col" style={{ height: 320 }}>
