@@ -513,6 +513,97 @@ async def compute_full(db: AsyncSession, workspace_id, force_graph: bool = False
     return snap
 
 
+async def run_pipeline_only(db: AsyncSession, workspace_id) -> str:
+    """Run the per-coin LangGraph for the step-by-step Pipeline feed ONLY.
+
+    Streams steps over WS + stores the run in Redis, but does NOT touch the desk
+    snapshot, auto-trades, alerts or commentary — those belong to the heavy tick.
+    Decoupled so it can run on its own (slower) schedule without slowing the desk.
+
+    Single-flight: a Redis lock guarantees only one pipeline runs at a time per
+    workspace (across the manual trigger + the auto job + multi-process worker),
+    so the shared Ollama isn't hammered by overlapping runs. Best-effort — if
+    Redis is unavailable the run still proceeds. Returns a short status string.
+    """
+    lock_key = f"desk:pipeline:lock:{workspace_id}"
+    r = None
+    try:
+        r = await get_redis()
+        got = await r.set(lock_key, "1", nx=True, ex=settings.PIPELINE_LOCK_TTL_SECONDS)
+        if not got:
+            log.info("desk_pipeline_skipped_locked", workspace=str(workspace_id))
+            return "locked"
+    except Exception:
+        r = None  # Redis down → proceed without the lock (best-effort)
+
+    try:
+        items = await watchlist_plus_discovered(db, workspace_id)
+        opps = await daily_opportunities(items) if items else []
+        if not opps:
+            return "no_opps"
+        prices = await _live_prices(items)
+        positions = await _positions(db, workspace_id, prices)
+        stats = await _stats(db, workspace_id)
+        news_agg = aggregate_sentiment(await fetch_news(), None)
+        det_chars = build_desk(opps, positions, stats, news_agg, prices, _seed())
+
+        graph = get_graph()
+        state: DeskState = {
+            "workspace_id": str(workspace_id),
+            "watchlist_items": items, "prices": prices, "positions": positions,
+            "stats": stats, "news_agg": news_agg, "news_summary": "",
+            "ranked_opportunities": opps,
+            "risk_verdict": "", "risk_level": "low", "can_trade": True,
+            "model_verdict": "", "trade_decisions": [], "trader_message": "",
+            "review_verdict": "", "exec_approved": True, "exec_quality": 0.5,
+            "coach_message": "", "analyst_message": "", "analyst_levels": None,
+            "market_bias": "neutral", "focus_timeframe": "1H",
+            "characters": det_chars, "errors": [],
+            "pipeline_status": "running", "pipeline_steps": [],
+            "ranked_coins": [], "coin_index": 0, "coin_results": [],
+            "current_coin": None, "agent_configs": {},
+        }
+        pipeline_steps: list[dict] = []
+        run_status = "completed"
+        try:
+            async for step_data in graph.astream(state):
+                for node_id, output in step_data.items():
+                    if node_id == "__end__":
+                        continue
+                    coin_sym = state.get("current_coin", {}).get("symbol") if state.get("current_coin") else None
+                    label = node_id
+                    if coin_sym and node_id in ("news", "trader", "risk", "exec", "coach"):
+                        label = f"{coin_sym}_{node_id}"
+                    step_rec = {
+                        "node_id": node_id, "label": label, "coin": coin_sym,
+                        "coin_index": state.get("coin_index", 0),
+                        "status": "completed", "ts": time.time(),
+                        "report": _extract_report(node_id, output, state),
+                    }
+                    pipeline_steps.append(step_rec)
+                    state.update(output)
+                    if state.get("ranked_coins"):
+                        step_rec["ranked_coins"] = [c["symbol"] for c in state["ranked_coins"]]
+                    await _publish_pipeline_step(str(workspace_id), step_rec, "running")
+        except Exception as e:
+            log.warning("desk_pipeline_only_failed", workspace=str(workspace_id), error=str(e))
+            run_status = "error"
+
+        try:
+            r2 = r or await get_redis()
+            await _store_pipeline_run(r2, str(workspace_id), pipeline_steps, run_status)
+            await _publish_pipeline_step(str(workspace_id), {"node_id": "__complete__", "status": run_status}, run_status)
+        except Exception:
+            pass
+        return run_status
+    finally:
+        if r is not None:
+            try:
+                await r.delete(lock_key)
+            except Exception:
+                pass
+
+
 async def refresh_prices(db: AsyncSession, workspace_id) -> DeskSnapshot | None:
     """Cheap tick: refresh live prices ONLY, never rebuild the node/character
     structure.

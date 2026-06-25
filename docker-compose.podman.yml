@@ -58,6 +58,11 @@ services:
       # shared Ollama and emits a coin-centric desk. Flip it on only if you want the
       # step-by-step Pipeline feed and can spare the budget.
       DESK_LLM_ENABLED: "true"
+      # auto-run the step-by-step Pipeline graph on its own schedule (decoupled —
+      # never touches the desk snapshot, single-flight locked so runs don't overlap).
+      # 300s = every 5 min; set 180 for every 3 min.
+      DESK_GRAPH_AUTO: "true"
+      DESK_GRAPH_INTERVAL_SECONDS: "300"
       # desk market discovery — scan top-N THB pairs by volume on top of watchlist
       DESK_SCAN_ENABLED: "true"
       DESK_SCAN_TOP_N: "20"

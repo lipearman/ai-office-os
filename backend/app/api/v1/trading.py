@@ -525,9 +525,10 @@ async def trigger_pipeline(workspace_id: str):
     async def _run():
         async with AsyncSessionLocal() as db:
             try:
-                # force the LangGraph so the step-by-step feed runs even when the
-                # periodic tick keeps it off (DESK_GRAPH_ENABLED=false)
-                await desk_store.compute_full(db, uuid.UUID(workspace_id), force_graph=True)
+                # pipeline-feed only: runs the LangGraph for the step-by-step feed
+                # without overwriting the desk snapshot, and shares the single-flight
+                # lock with the auto pipeline job so runs never overlap.
+                await desk_store.run_pipeline_only(db, uuid.UUID(workspace_id))
             except Exception:
                 pass
 

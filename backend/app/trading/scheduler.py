@@ -70,6 +70,32 @@ async def heavy_tick() -> None:
             log.warning("desk_heavy_ws_failed", workspace=str(ws), error=str(e))
 
 
+async def pipeline_tick() -> None:
+    """Run the per-coin LangGraph pipeline feed on its own (slower) schedule.
+
+    Decoupled from heavy_tick: it only refreshes the step-by-step Pipeline feed
+    (never the desk snapshot), and run_pipeline_only holds a single-flight lock so
+    it won't overlap a manual "Run Pipeline" or a previous auto run. Long but async
+    (LLM awaits), so the fast tick + API keep serving while it runs."""
+    try:
+        ws_ids = await _workspaces_with_watchlist()
+    except Exception as e:
+        log.warning("desk_pipeline_list_failed", error=str(e))
+        return
+    for ws in ws_ids:
+        try:
+            async with AsyncSessionLocal() as db:
+                await asyncio.wait_for(
+                    desk_store.run_pipeline_only(db, ws),
+                    timeout=settings.PIPELINE_TICK_TIMEOUT_SECONDS,
+                )
+        except asyncio.TimeoutError:
+            log.warning("desk_pipeline_ws_timeout", workspace=str(ws),
+                        timeout=settings.PIPELINE_TICK_TIMEOUT_SECONDS)
+        except Exception as e:
+            log.warning("desk_pipeline_ws_failed", workspace=str(ws), error=str(e))
+
+
 async def fast_tick() -> None:
     """Cheap price-only refresh of every workspace that already has a snapshot."""
     try:
@@ -94,8 +120,15 @@ def start_scheduler() -> None:
     _scheduler.add_job(heavy_tick, "interval", seconds=HEAVY_SECONDS, id="desk_heavy")
     _scheduler.add_job(fast_tick, "interval", seconds=FAST_SECONDS, id="desk_fast")
     _scheduler.add_job(heavy_tick, id="desk_heavy_boot")  # immediate first run
+    # decoupled auto pipeline (step-by-step feed) — own schedule, won't slow the desk
+    if settings.DESK_GRAPH_AUTO:
+        _scheduler.add_job(pipeline_tick, "interval",
+                           seconds=settings.DESK_GRAPH_INTERVAL_SECONDS,
+                           id="desk_pipeline", max_instances=1, coalesce=True)
     _scheduler.start()
-    log.info("trading.scheduler.started", heavy_seconds=HEAVY_SECONDS, fast_seconds=FAST_SECONDS)
+    log.info("trading.scheduler.started", heavy_seconds=HEAVY_SECONDS, fast_seconds=FAST_SECONDS,
+             pipeline_auto=settings.DESK_GRAPH_AUTO,
+             pipeline_seconds=settings.DESK_GRAPH_INTERVAL_SECONDS if settings.DESK_GRAPH_AUTO else None)
 
 
 def stop_scheduler() -> None:

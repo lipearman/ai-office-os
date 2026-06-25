@@ -43,6 +43,13 @@ class Settings(BaseSettings):
     # max coins the per-coin LLM agents (news/trader/coach) analyze per heavy tick.
     # Each coin ≈ 3 LLM calls; keep small so the tick finishes within the budget.
     DESK_LLM_MAX_COINS: int = 3
+    # auto-run the per-coin LangGraph pipeline on its OWN schedule (separate from
+    # the desk heavy tick). It only refreshes the step-by-step Pipeline feed — it
+    # never overwrites the desk snapshot, so the desk stays fast/deterministic.
+    DESK_GRAPH_AUTO: bool = True
+    DESK_GRAPH_INTERVAL_SECONDS: int = 300          # how often the auto pipeline runs
+    PIPELINE_TICK_TIMEOUT_SECONDS: float = 200.0    # watchdog for one pipeline run
+    PIPELINE_LOCK_TTL_SECONDS: int = 240            # single-flight lock auto-release
     # run the desk worker (APScheduler) inside the API process. Set False when
     # running a dedicated worker (`python -m app.trading.worker`) so the ticks
     # don't run twice.
