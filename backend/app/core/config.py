@@ -59,6 +59,11 @@ class Settings(BaseSettings):
     ML_VOTE_TTL_SECONDS: int = 7200                 # cached vote freshness
     ML_VOTE_LOCK_TTL_SECONDS: int = 660             # single-flight lock auto-release
     ML_VOTE_MIN_PROB: float = 0.5                   # below = ML does not confirm
+    # auto-pin the coins the ML model likes most (P(up) >= ML_VOTE_MIN_PROB) into the
+    # watchlist, non-destructively: only auto-added symbols are managed/pruned —
+    # manually-added ones are never touched. Runs inside the ML refresh job.
+    AUTO_WATCHLIST_FROM_ML: bool = True
+    AUTO_WATCHLIST_TOP_N: int = 5
     # run the desk worker (APScheduler) inside the API process. Set False when
     # running a dedicated worker (`python -m app.trading.worker`) so the ticks
     # don't run twice.

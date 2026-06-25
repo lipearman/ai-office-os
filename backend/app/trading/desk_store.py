@@ -33,6 +33,9 @@ PIPELINE_TTL = 600
 
 # Redis key for a cached ML vote P(up) per symbol (refreshed by a background job).
 ML_VOTE_KEY = "desk:mlvote:{symbol}"
+# Redis key tracking which watchlist symbols were AUTO-added from ML (so we can
+# prune only those, never the user's manually-added coins).
+AUTO_WATCHLIST_KEY = "desk:auto_watchlist:{workspace_id}"
 
 _PIPELINE_NODE_DEFS = {
     "monitor": {"id": "monitor", "name": "Model Monitor",     "emoji": "📉", "role": "advisory", "description": "Scan หา 10 เหรียญที่ดีที่สุดของวันนี้"},
@@ -634,6 +637,7 @@ async def refresh_ml_votes(db: AsyncSession, workspace_id) -> int:
         client = BitkubClient()
         rr = r or await get_redis()
         done = 0
+        votes: dict[str, float] = {}
         for it in items:
             sym = it["symbol"]
             tf = (it.get("cfg") or {}).get("timeframe") or "1H"
@@ -641,12 +645,17 @@ async def refresh_ml_votes(db: AsyncSession, workspace_id) -> int:
                 candles = await client.fetch_ohlcv(sym, tf, limit=1500)
                 prob = ml_vote(candles)
                 if prob is not None:
+                    votes[sym] = prob
                     await rr.setex(ML_VOTE_KEY.format(symbol=sym),
                                    settings.ML_VOTE_TTL_SECONDS, str(round(prob, 4)))
                     done += 1
             except Exception:
                 continue
         log.info("desk_ml_votes_refreshed", workspace=str(workspace_id), count=done)
+        try:
+            await reconcile_auto_watchlist(db, workspace_id, votes, rr)
+        except Exception as e:
+            log.warning("auto_watchlist_failed", workspace=str(workspace_id), error=str(e))
         return done
     finally:
         if r is not None:
@@ -673,6 +682,51 @@ async def get_ml_votes(symbols: list[str]) -> dict[str, float]:
         except Exception:
             continue
     return out
+
+
+async def reconcile_auto_watchlist(db: AsyncSession, workspace_id, votes: dict[str, float], r=None) -> None:
+    """Non-destructively pin the coins the ML model likes most into the watchlist.
+
+    `desired` = top-N symbols with P(up) >= ML_VOTE_MIN_PROB. We add the desired
+    ones that aren't already in the watchlist, and remove ONLY symbols we added
+    automatically in a previous cycle (tracked in Redis) that are no longer
+    desired. Manually-added coins are never touched.
+    """
+    if not settings.AUTO_WATCHLIST_FROM_ML:
+        return
+    floor = settings.ML_VOTE_MIN_PROB
+    ranked = sorted(((s, p) for s, p in votes.items() if p >= floor), key=lambda x: -x[1])
+    desired = [s for s, _ in ranked[: settings.AUTO_WATCHLIST_TOP_N]]
+
+    res = await db.execute(select(WatchlistItem).where(WatchlistItem.workspace_id == workspace_id))
+    current = {w.symbol: w for w in res.scalars().all()}
+
+    r = r or await get_redis()
+    key = AUTO_WATCHLIST_KEY.format(workspace_id=workspace_id)
+    try:
+        raw = await r.get(key)
+        prev_auto = set(json.loads(raw)) if raw else set()
+    except Exception:
+        prev_auto = set()
+
+    to_add = [s for s in desired if s not in current]
+    to_remove = [s for s in prev_auto if s not in desired and s in current]
+
+    for s in to_add:
+        db.add(WatchlistItem(workspace_id=workspace_id, symbol=s, enabled=True, strategies=[]))
+    for s in to_remove:
+        await db.delete(current[s])
+    if to_add or to_remove:
+        await db.commit()
+
+    new_auto = (prev_auto - set(to_remove)) | set(to_add)
+    try:
+        await r.setex(key, 7 * 24 * 3600, json.dumps(sorted(new_auto)))
+    except Exception:
+        pass
+    if to_add or to_remove:
+        log.info("auto_watchlist_reconciled", workspace=str(workspace_id),
+                 added=to_add, removed=to_remove)
 
 
 async def refresh_prices(db: AsyncSession, workspace_id) -> DeskSnapshot | None:
