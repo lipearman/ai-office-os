@@ -27,6 +27,7 @@ class BacktestParams:
     stop_atr: float = 1.5
     tp_rr: float = 2.0
     fee: float = 0.0025          # per side
+    slippage: float = 0.0005     # per side — assume fills a touch worse than signal price
     rsi_exit: float = 70.0
     # ── rsi_reversion template ──
     rsi_os: float = 30.0         # oversold entry
@@ -49,7 +50,7 @@ class Trade:
     exit_price: float
     exit_reason: str             # take_profit | stop_loss | signal_exit | eod
     bars_held: int
-    pnl_pct: float               # net of fees
+    pnl_pct: float               # net of fees + slippage
     r_multiple: float
     result: str                  # WIN | LOSS | BREAKEVEN
     reason: str                  # why we entered
@@ -160,6 +161,7 @@ def simulate(C: dict, p: BacktestParams, lo: int = 0, hi: int | None = None,
     adx_a = C["adx14"]; ts_a = C["ts"]
     trades: list[Trade] = []
     fee_round = 2 * p.fee
+    slip_round = 2 * p.slippage   # entry fills higher + exit fills lower → round-trip cost
     in_pos = False
     entry_price = stop = target = 0.0
     entry_idx = 0
@@ -197,7 +199,7 @@ def simulate(C: dict, p: BacktestParams, lo: int = 0, hi: int | None = None,
             exit_price, exit_reason = close_a[i], "signal_exit"
 
         if exit_price is not None:
-            net = (exit_price / entry_price - 1.0) - fee_round
+            net = (exit_price / entry_price - 1.0) - fee_round - slip_round
             risk = entry_price - stop
             trades.append(Trade(
                 entry_at=str(ts_a[entry_idx]),
@@ -217,7 +219,7 @@ def simulate(C: dict, p: BacktestParams, lo: int = 0, hi: int | None = None,
 
     if in_pos:
         exit_price = close_a[hi - 1]
-        net = (exit_price / entry_price - 1.0) - fee_round
+        net = (exit_price / entry_price - 1.0) - fee_round - slip_round
         risk = entry_price - stop
         trades.append(Trade(
             entry_at=str(ts_a[entry_idx]),
@@ -249,6 +251,56 @@ def run_backtest(
     res.trades = simulate(prepare(df), p, 0, len(df))
     res.stats, res.equity_curve = _compute_stats(res.trades)
     return res
+
+
+def walk_forward_winrate(
+    candles: list[Candle], params: BacktestParams | None = None, folds: int = 4
+) -> dict:
+    """Walk-forward win rate: evaluate the (fixed-rule) strategy across consecutive
+    time folds, so we can see whether the edge HOLDS recently and consistently
+    instead of trusting one all-history number.
+
+    Returns {} when there isn't enough history. `oos_win_rate` equal-weights folds
+    (each period counts the same), `recent_win_rate` is the most recent fold, and
+    `wf_stability_std` is the spread of fold win-rates (high = unreliable).
+    Cheap — just a few extra simulate() passes on slices of precomputed arrays.
+    """
+    p = params or BacktestParams()
+    df = indicator_frame(candles, closed_only=True).reset_index(drop=True)
+    n = len(df)
+    if n < 120 or folds < 2:
+        return {}
+    C = prepare(df)
+    start = min(200, n // 5)          # warmup so ema200 etc. are valid before entries
+    seg = (n - start) // folds
+    if seg < 20:
+        return {}
+    fold_wr: list[float] = []
+    fold_tn: list[int] = []
+    recent_wr: float | None = None
+    for k in range(folds):
+        lo = start + k * seg
+        hi = n if k == folds - 1 else start + (k + 1) * seg
+        st, _ = _compute_stats(simulate(C, p, lo, hi))
+        tn = st.get("total_trades", 0)
+        wr = st.get("win_rate")
+        if tn > 0 and wr is not None:
+            fold_wr.append(wr)
+            fold_tn.append(tn)
+        if k == folds - 1:
+            recent_wr = wr if (tn > 0 and wr is not None) else None
+    if not fold_wr:
+        return {}
+    mean_wr = sum(fold_wr) / len(fold_wr)
+    std = (sum((x - mean_wr) ** 2 for x in fold_wr) / len(fold_wr)) ** 0.5
+    return {
+        "oos_win_rate": round(mean_wr, 1),
+        "recent_win_rate": recent_wr,
+        "fold_win_rates": [round(x, 1) for x in fold_wr],
+        "wf_stability_std": round(std, 1),
+        "wf_folds": len(fold_wr),
+        "wf_total_trades": sum(fold_tn),
+    }
 
 
 def _compute_stats(trades: list[Trade]) -> tuple[dict, list[dict]]:

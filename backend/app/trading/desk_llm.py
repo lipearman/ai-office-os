@@ -11,6 +11,7 @@ use low.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 
 import structlog
@@ -77,8 +78,9 @@ async def _one_call(characters: list[dict], provider: str, model: str) -> dict[s
     )
     try:
         llm = get_llm(provider, model)
-        resp = await llm.ainvoke(
-            [SystemMessage(content=_SYSTEM), HumanMessage(content=user)]
+        resp = await asyncio.wait_for(
+            llm.ainvoke([SystemMessage(content=_SYSTEM), HumanMessage(content=user)]),
+            timeout=settings.LLM_TIMEOUT_SECONDS,
         )
         content = resp.content if isinstance(resp.content, str) else str(resp.content)
         data = _parse_json_object(content)
@@ -219,8 +221,9 @@ async def meeting_commentary(
         wanted = {c["key"] for c in group}
         try:
             llm = get_llm(provider, model)
-            resp = await llm.ainvoke(
-                [SystemMessage(content=_MEETING_PROMPT), HumanMessage(content=user)]
+            resp = await asyncio.wait_for(
+                llm.ainvoke([SystemMessage(content=_MEETING_PROMPT), HumanMessage(content=user)]),
+                timeout=settings.LLM_TIMEOUT_SECONDS,
             )
             content = resp.content if isinstance(resp.content, str) else str(resp.content)
             data = _parse_json_object(content)

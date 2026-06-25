@@ -31,6 +31,9 @@ DESK_CHANNEL = "desk-updates"
 PIPELINE_RUN_KEY = "pipeline_run:{workspace_id}"
 PIPELINE_TTL = 600
 
+# Redis key for a cached ML vote P(up) per symbol (refreshed by a background job).
+ML_VOTE_KEY = "desk:mlvote:{symbol}"
+
 _PIPELINE_NODE_DEFS = {
     "monitor": {"id": "monitor", "name": "Model Monitor",     "emoji": "📉", "role": "advisory", "description": "Scan หา 10 เหรียญที่ดีที่สุดของวันนี้"},
     "analyst": {"id": "analyst", "name": "Market Analyst",    "emoji": "📊", "role": "advisory", "description": "วิเคราะห์ภาพรวมตลาดและแนวโน้ม"},
@@ -142,8 +145,17 @@ from app.trading.paper import unrealized, paper_stats
 from app.trading.news import fetch_news, aggregate_sentiment
 from app.trading.bitkub import BitkubClient, to_market_symbol, to_tradingview_symbol
 from app.trading import desk_llm
+from app.trading import auto_trader
 from app.trading.graph import get_graph
 from app.trading.state import DeskState
+from app.trading.ml import ml_vote
+from app.core.config import settings
+
+
+async def _empty_aiter():
+    """Async iterator that yields nothing — used to skip the graph stream."""
+    return
+    yield  # pragma: no cover — makes this an async generator
 
 
 def _seed() -> int:
@@ -162,6 +174,53 @@ async def _watchlist_items(db: AsyncSession, workspace_id) -> list[dict]:
         {"symbol": w.symbol, "cfg": (w.strategies[0] if w.strategies else None)}
         for w in res.scalars().all()
     ]
+
+
+async def _discovered_symbols(limit: int) -> list[str]:
+    """Market discovery: top-N Bitkub THB pairs by 24h volume (one ticker call).
+
+    The desk scans these on top of the watchlist so good movers surface without
+    being added by hand.
+    """
+    if limit <= 0:
+        return []
+    try:
+        ticker = await BitkubClient().ticker()
+        if not isinstance(ticker, dict):
+            return []
+        stable = {"USDT", "USDC", "BUSD", "DAI", "TUSD", "FDUSD"}
+        rows: list[tuple[str, float]] = []
+        for mk, rec in ticker.items():
+            if not isinstance(mk, str) or not mk.startswith("THB_") or not isinstance(rec, dict):
+                continue
+            try:
+                tv = to_tradingview_symbol(mk)
+            except Exception:
+                continue
+            # keep only proper BASE_THB pairs; skip stablecoins (no trading signal)
+            if not tv.endswith("_THB") or tv.split("_")[0] in stable:
+                continue
+            vol = rec.get("quoteVolume") or rec.get("baseVolume") or 0
+            rows.append((tv, float(vol)))
+        rows.sort(key=lambda r: -r[1])
+        return [s for s, _ in rows[:limit]]
+    except Exception:
+        return []
+
+
+async def watchlist_plus_discovered(db: AsyncSession, workspace_id) -> list[dict]:
+    """Watchlist items (pinned) + market-scan discoveries (top-N by volume).
+
+    Shared by the /office desk and the /trading opportunities endpoint so both
+    surface the same scan-discovered movers.
+    """
+    items = await _watchlist_items(db, workspace_id)
+    if settings.DESK_SCAN_ENABLED:
+        wl = {it["symbol"] for it in items}
+        discovered = await _discovered_symbols(settings.DESK_SCAN_TOP_N)
+        items = items + [{"symbol": s, "cfg": None, "discovered": True}
+                         for s in discovered if s not in wl]
+    return items
 
 
 async def _live_prices(items: list[dict]) -> dict[str, float]:
@@ -243,13 +302,30 @@ async def get_snapshot(db: AsyncSession, workspace_id) -> DeskSnapshot | None:
     return res.scalar_one_or_none()
 
 
-async def compute_full(db: AsyncSession, workspace_id) -> DeskSnapshot:
-    """Heavy tick: full analysis → LangGraph pipeline → upsert snapshot + detect alerts."""
-    items = await _watchlist_items(db, workspace_id)
-    opps = await daily_opportunities(items) if items else []
+async def compute_full(db: AsyncSession, workspace_id, force_graph: bool = False) -> DeskSnapshot:
+    """Heavy tick: full analysis → LangGraph pipeline → upsert snapshot + detect alerts.
+
+    `force_graph=True` runs the per-coin LangGraph even when DESK_GRAPH_ENABLED is
+    off — used by the manual "Run Pipeline" trigger so users can see the step-by-step
+    feed on demand, while the periodic tick stays fast/deterministic.
+    """
+    # watchlist (pinned) + market-scan discoveries (top-N by volume)
+    items = await watchlist_plus_discovered(db, workspace_id)
+    ml_votes = (await get_ml_votes([it["symbol"] for it in items])
+                if (items and settings.DESK_ML_VOTE_ENABLED) else {})
+    opps = await daily_opportunities(items, ml_votes=ml_votes) if items else []
     prices = await _live_prices(items)
     positions = await _positions(db, workspace_id, prices)
     stats = await _stats(db, workspace_id)
+
+    # auto paper-trading (opt-in) — run EARLY (before the slow LangGraph/LLM) and
+    # commit immediately, so a watchdog cancel of the graph can't prevent trades
+    try:
+        await auto_trader.auto_close(db, workspace_id, prices)
+        await auto_trader.auto_open(db, workspace_id, opps, prices)
+        await db.commit()
+    except Exception as e:
+        log.warning("auto_paper.heavy_failed", error=str(e))
 
     assets = sorted({w["symbol"].split("_")[0] for w in items})
     news_items = await fetch_news()
@@ -260,7 +336,9 @@ async def compute_full(db: AsyncSession, workspace_id) -> DeskSnapshot:
 
     snap = await get_snapshot(db, workspace_id)
 
-    # ── LangGraph multi-agent pipeline (streamed step-by-step) ──
+    # ── LangGraph multi-agent pipeline (streamed step-by-step) — opt-in ──
+    # When DESK_GRAPH_ENABLED is off, the stream is skipped and `characters`
+    # stays the deterministic desk; enrich_commentary (below) adds AI flavor.
     graph = get_graph()
     state: DeskState = {
         "workspace_id": str(workspace_id),
@@ -299,7 +377,8 @@ async def compute_full(db: AsyncSession, workspace_id) -> DeskSnapshot:
     graph_commentary: dict = {}
     characters = det_chars
     try:
-        async for step_data in graph.astream(state):
+        stream = graph.astream(state) if (settings.DESK_GRAPH_ENABLED or force_graph) else _empty_aiter()
+        async for step_data in stream:
             for node_id, output in step_data.items():
                 if node_id == "__end__":
                     continue
@@ -440,41 +519,208 @@ async def compute_full(db: AsyncSession, workspace_id) -> DeskSnapshot:
     return snap
 
 
+async def run_pipeline_only(db: AsyncSession, workspace_id) -> str:
+    """Run the per-coin LangGraph for the step-by-step Pipeline feed ONLY.
+
+    Streams steps over WS + stores the run in Redis, but does NOT touch the desk
+    snapshot, auto-trades, alerts or commentary — those belong to the heavy tick.
+    Decoupled so it can run on its own (slower) schedule without slowing the desk.
+
+    Single-flight: a Redis lock guarantees only one pipeline runs at a time per
+    workspace (across the manual trigger + the auto job + multi-process worker),
+    so the shared Ollama isn't hammered by overlapping runs. Best-effort — if
+    Redis is unavailable the run still proceeds. Returns a short status string.
+    """
+    lock_key = f"desk:pipeline:lock:{workspace_id}"
+    r = None
+    try:
+        r = await get_redis()
+        got = await r.set(lock_key, "1", nx=True, ex=settings.PIPELINE_LOCK_TTL_SECONDS)
+        if not got:
+            log.info("desk_pipeline_skipped_locked", workspace=str(workspace_id))
+            return "locked"
+    except Exception:
+        r = None  # Redis down → proceed without the lock (best-effort)
+
+    try:
+        items = await watchlist_plus_discovered(db, workspace_id)
+        ml_votes = (await get_ml_votes([it["symbol"] for it in items])
+                    if (items and settings.DESK_ML_VOTE_ENABLED) else {})
+        opps = await daily_opportunities(items, ml_votes=ml_votes) if items else []
+        if not opps:
+            return "no_opps"
+        prices = await _live_prices(items)
+        positions = await _positions(db, workspace_id, prices)
+        stats = await _stats(db, workspace_id)
+        news_agg = aggregate_sentiment(await fetch_news(), None)
+        det_chars = build_desk(opps, positions, stats, news_agg, prices, _seed())
+
+        graph = get_graph()
+        state: DeskState = {
+            "workspace_id": str(workspace_id),
+            "watchlist_items": items, "prices": prices, "positions": positions,
+            "stats": stats, "news_agg": news_agg, "news_summary": "",
+            "ranked_opportunities": opps,
+            "risk_verdict": "", "risk_level": "low", "can_trade": True,
+            "model_verdict": "", "trade_decisions": [], "trader_message": "",
+            "review_verdict": "", "exec_approved": True, "exec_quality": 0.5,
+            "coach_message": "", "analyst_message": "", "analyst_levels": None,
+            "market_bias": "neutral", "focus_timeframe": "1H",
+            "characters": det_chars, "errors": [],
+            "pipeline_status": "running", "pipeline_steps": [],
+            "ranked_coins": [], "coin_index": 0, "coin_results": [],
+            "current_coin": None, "agent_configs": {},
+        }
+        pipeline_steps: list[dict] = []
+        run_status = "completed"
+        try:
+            async for step_data in graph.astream(state):
+                for node_id, output in step_data.items():
+                    if node_id == "__end__":
+                        continue
+                    coin_sym = state.get("current_coin", {}).get("symbol") if state.get("current_coin") else None
+                    label = node_id
+                    if coin_sym and node_id in ("news", "trader", "risk", "exec", "coach"):
+                        label = f"{coin_sym}_{node_id}"
+                    step_rec = {
+                        "node_id": node_id, "label": label, "coin": coin_sym,
+                        "coin_index": state.get("coin_index", 0),
+                        "status": "completed", "ts": time.time(),
+                        "report": _extract_report(node_id, output, state),
+                    }
+                    pipeline_steps.append(step_rec)
+                    state.update(output)
+                    if state.get("ranked_coins"):
+                        step_rec["ranked_coins"] = [c["symbol"] for c in state["ranked_coins"]]
+                    await _publish_pipeline_step(str(workspace_id), step_rec, "running")
+        except Exception as e:
+            log.warning("desk_pipeline_only_failed", workspace=str(workspace_id), error=str(e))
+            run_status = "error"
+
+        try:
+            r2 = r or await get_redis()
+            await _store_pipeline_run(r2, str(workspace_id), pipeline_steps, run_status)
+            await _publish_pipeline_step(str(workspace_id), {"node_id": "__complete__", "status": run_status}, run_status)
+        except Exception:
+            pass
+        return run_status
+    finally:
+        if r is not None:
+            try:
+                await r.delete(lock_key)
+            except Exception:
+                pass
+
+
+async def refresh_ml_votes(db: AsyncSession, workspace_id) -> int:
+    """Background: train the ML ensemble per candidate symbol and cache P(up).
+
+    Heavy (XGBoost per coin) — runs on its own slow schedule with a single-flight
+    lock; the scan only READS these cached votes (never trains inline). Returns
+    how many votes were refreshed. Best-effort.
+    """
+    lock_key = f"desk:mlvote:lock:{workspace_id}"
+    r = None
+    try:
+        r = await get_redis()
+        if not await r.set(lock_key, "1", nx=True, ex=settings.ML_VOTE_LOCK_TTL_SECONDS):
+            return 0
+    except Exception:
+        r = None
+    try:
+        items = await watchlist_plus_discovered(db, workspace_id)
+        if not items:
+            return 0
+        client = BitkubClient()
+        rr = r or await get_redis()
+        done = 0
+        for it in items:
+            sym = it["symbol"]
+            tf = (it.get("cfg") or {}).get("timeframe") or "1H"
+            try:
+                candles = await client.fetch_ohlcv(sym, tf, limit=1500)
+                prob = ml_vote(candles)
+                if prob is not None:
+                    await rr.setex(ML_VOTE_KEY.format(symbol=sym),
+                                   settings.ML_VOTE_TTL_SECONDS, str(round(prob, 4)))
+                    done += 1
+            except Exception:
+                continue
+        log.info("desk_ml_votes_refreshed", workspace=str(workspace_id), count=done)
+        return done
+    finally:
+        if r is not None:
+            try:
+                await r.delete(lock_key)
+            except Exception:
+                pass
+
+
+async def get_ml_votes(symbols: list[str]) -> dict[str, float]:
+    """Read cached ML votes {symbol: P(up)} for the given symbols (best-effort)."""
+    if not symbols:
+        return {}
+    try:
+        r = await get_redis()
+    except Exception:
+        return {}
+    out: dict[str, float] = {}
+    for s in symbols:
+        try:
+            v = await r.get(ML_VOTE_KEY.format(symbol=s))
+            if v is not None:
+                out[s] = float(v)
+        except Exception:
+            continue
+    return out
+
+
 async def refresh_prices(db: AsyncSession, workspace_id) -> DeskSnapshot | None:
-    """Cheap tick: refresh prices + unrealized PnL only, reusing stored analysis."""
+    """Cheap tick: refresh live prices ONLY, never rebuild the node/character
+    structure.
+
+    The heavy tick decides the desk layout (LangGraph coin-nodes); the fast tick
+    must not swap it for the deterministic 7-role layout — otherwise the desk
+    flips format every ~20s. So here we just update the last price / %change in
+    the stored ticker (one ticker call, no per-symbol OHLC, no build_desk) and
+    leave `snap.characters` untouched.
+    """
     snap = await get_snapshot(db, workspace_id)
     if snap is None or not snap.meta:
         return None  # nothing computed yet — wait for the heavy tick
     meta = snap.meta
 
-    # when the LangGraph pipeline is active, don't rebuild characters
-    # (preserves LLM decision output; prices refresh on the next heavy tick)
-    if meta.get("graph_active"):
+    try:
+        raw = await BitkubClient().ticker()
+    except Exception:
+        raw = None
+    if not isinstance(raw, dict):
         snap.priced_at = datetime.now(timezone.utc)
         await db.commit()
         return snap
 
-    # deterministic mode: rebuild messages with fresh prices, keep commentary
-    items = await _watchlist_items(db, workspace_id)
-    prices = await _live_prices(items)
-    if not prices:
-        return snap
-    positions = await _positions(db, workspace_id, prices)
-    prev_commentary = {c.get("key"): c.get("commentary") for c in (snap.characters or [])}
-    characters = build_desk(
-        meta.get("opps", []), positions, meta.get("stats", {}),
-        meta.get("news_agg", {}), prices, _seed(),
-    )
-    for c in characters:
-        cm = prev_commentary.get(c["key"])
-        if cm:
-            c["commentary"] = cm
-    meta["prices"] = prices
-    ticker = await _live_ticker(items)
+    ticker = dict(meta.get("ticker") or {})
+    prices = dict(meta.get("prices") or {})
+    for sym, entry in ticker.items():
+        rec = raw.get(to_market_symbol(sym))
+        if isinstance(rec, dict) and rec.get("last") is not None:
+            p = float(rec["last"])
+            prices[sym] = p
+            if isinstance(entry, dict):
+                entry["p"] = p
+                entry["c"] = float(rec.get("percentChange", entry.get("c", 0)))
     meta["ticker"] = ticker
-    snap.characters = characters
+    meta["prices"] = prices
     snap.meta = meta
     snap.priced_at = datetime.now(timezone.utc)
+
+    # auto paper-trading (opt-in): responsive stop/target exits on the 20s tick
+    try:
+        await auto_trader.auto_close(db, workspace_id, prices)
+    except Exception as e:
+        log.warning("auto_paper.fast_failed", error=str(e))
+
     await db.commit()
+    # characters unchanged → push only the refreshed live numbers
     await _publish(workspace_id, snap.characters, ticker, meta.get("news_agg"))
     return snap

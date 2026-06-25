@@ -76,8 +76,18 @@ export default function TradingOffice({ officeName }: Props) {
   const imgRef = useRef<HTMLImageElement>(null);
   const dragId = useRef<string | null>(null);
   const [imgRect, setImgRect] = useState<{ left: number; top: number; w: number; h: number; cw: number; ch: number } | null>(null);
+  // On narrow/portrait screens the wide office image gets badly cropped by
+  // object-cover (you only see a ~20% center slice). Fit the WHOLE scene instead.
+  const [fitContain, setFitContain] = useState(false);
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 640px)");
+    const apply = () => setFitContain(mq.matches);
+    apply();
+    mq.addEventListener("change", apply);
+    return () => mq.removeEventListener("change", apply);
+  }, []);
 
-  // compute rendered image rect (object-cover → actual visible area)
+  // compute rendered image rect (matches the <img> object-fit → actual visible area)
   const computeImgRect = useCallback(() => {
     const img = imgRef.current;
     const ctr = stageRef.current;
@@ -85,12 +95,12 @@ export default function TradingOffice({ officeName }: Props) {
     const cw = ctr.clientWidth, ch = ctr.clientHeight;
     const nw = img.naturalWidth, nh = img.naturalHeight;
     if (!cw || !ch || !nw || !nh) { setImgRect(null); return; }
-    // object-cover: image scales so it fully covers the container (cropping excess)
-    const scale = Math.max(cw / nw, ch / nh);
+    // contain → fit the whole image (letterbox); cover → fill & crop excess
+    const scale = fitContain ? Math.min(cw / nw, ch / nh) : Math.max(cw / nw, ch / nh);
     const rw = nw * scale;
     const rh = nh * scale;
     setImgRect({ left: (cw - rw) / 2, top: (ch - rh) / 2, w: rw, h: rh, cw, ch });
-  }, []);
+  }, [fitContain]);
 
   // map image-relative % → container-relative %
   const imgPctToCss = useCallback((x: number, y: number): { left: string; top: string } => {
@@ -110,7 +120,14 @@ export default function TradingOffice({ officeName }: Props) {
 
   // ── pipeline feed ──
   const [pipelineSteps, setPipelineSteps] = useState<{ node_id: string; report?: string; status: string; ts: number }[]>([]);
-  const [showPipelineFeed, setShowPipelineFeed] = useState(true);
+  // เริ่มต้นเปิดเฉพาะ Symbols — box อื่นกดเปิดเองจาก toolbar
+  const [showPipelineFeed, setShowPipelineFeed] = useState(false);
+  const [showSymbols, setShowSymbols] = useState(true);
+  const [showNews, setShowNews] = useState(false);
+  const [showChat, setShowChat] = useState(false);
+  const [showPaper, setShowPaper] = useState(true);
+  const [paperStats, setPaperStats] = useState<{ total_trades?: number; win_rate?: number; profit_factor?: number | null; total_pnl_thb?: number } | null>(null);
+  const [paperPositions, setPaperPositions] = useState<{ id: string; symbol: string; strategy?: string; entry_price?: number; live?: { pnl_thb: number; pnl_pct: number } | null }[]>([]);
   const pipelineRunRef = useRef<string>("idle");
   const [rankedCoins, setRankedCoins] = useState<string[]>([]);
   const [tickerMap, setTickerMap] = useState<Record<string, { s: string; p: number; c: number; v: number; h: number; l: number; closes?: number[] }>>({});
@@ -177,6 +194,18 @@ export default function TradingOffice({ officeName }: Props) {
   }, [current]);
 
   useEffect(() => { load();   }, [load]);
+
+  // live paper-trading data (positions + stats) for the floating box
+  useEffect(() => {
+    if (!current || editMode) return;
+    const loadPaper = () => {
+      api.get(`/trading/paper/positions/workspace/${current.id}`).then((r) => setPaperPositions(r.data.positions ?? [])).catch(() => {});
+      api.get(`/trading/paper/stats/workspace/${current.id}`).then((r) => setPaperStats(r.data)).catch(() => {});
+    };
+    loadPaper();
+    const t = setInterval(loadPaper, POLL_MS);
+    return () => clearInterval(t);
+  }, [current, editMode]);
 
   const sendChat = useCallback(async () => {
     if (!current || !chatInput.trim() || chatLoading) return;
@@ -369,8 +398,8 @@ export default function TradingOffice({ officeName }: Props) {
 
   return (
     <div className="absolute inset-0 flex flex-col bg-transparent">
-      {/* single slim toolbar */}
-      <div className="z-10 flex items-center gap-2 border-b border-white/10 bg-black/30 px-4 py-1.5 backdrop-blur">
+      {/* single slim toolbar — wraps on narrow/mobile screens */}
+      <div className="z-10 flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-white/10 bg-black/30 px-2 py-1.5 backdrop-blur sm:px-4">
         <span className="rounded-full bg-accent-500/20 px-2 py-0.5 text-[10px] font-semibold text-accent-300">
           🏢 Trading Floor · live
         </span>
@@ -384,7 +413,7 @@ export default function TradingOffice({ officeName }: Props) {
             ⏳ worker กำลังเริ่มประมวลผล…
           </span>
         )}
-        <div className="ml-auto flex items-center gap-2 text-[11px] text-white/40">
+        <div className="ml-auto flex flex-wrap items-center gap-1.5 text-[11px] text-white/40">
           {!editMode && loading && <RefreshCw size={12} className="animate-spin" />}
           {!editMode && updated && <span className="hidden sm:inline">{updated.toLocaleTimeString()}</span>}
           {!editMode ? (
@@ -397,9 +426,25 @@ export default function TradingOffice({ officeName }: Props) {
                 title="Active bubbles">
                 💬 {Object.keys(bubbles).length}
               </span>
+              <button onClick={() => setShowSymbols((s) => !s)}
+                className={`rounded-md border px-2 py-1 text-[10px] ${showSymbols ? "border-accent-400 text-accent-300" : "border-white/15 text-white/70"} hover:bg-white/10`}>
+                {showSymbols ? "⊟ Symbols" : "⊞ Symbols"}
+              </button>
               <button onClick={() => setShowPipelineFeed((s) => !s)}
                 className={`rounded-md border px-2 py-1 text-[10px] ${showPipelineFeed ? "border-accent-400 text-accent-300" : "border-white/15 text-white/70"} hover:bg-white/10`}>
                 {showPipelineFeed ? "⊟ Pipeline" : "⊞ Pipeline"}
+              </button>
+              <button onClick={() => setShowNews((s) => !s)}
+                className={`rounded-md border px-2 py-1 text-[10px] ${showNews ? "border-accent-400 text-accent-300" : "border-white/15 text-white/70"} hover:bg-white/10`}>
+                {showNews ? "⊟ News" : "⊞ News"}
+              </button>
+              <button onClick={() => setShowChat((s) => !s)}
+                className={`rounded-md border px-2 py-1 text-[10px] ${showChat ? "border-accent-400 text-accent-300" : "border-white/15 text-white/70"} hover:bg-white/10`}>
+                {showChat ? "⊟ Chat" : "⊞ Chat"}
+              </button>
+              <button onClick={() => setShowPaper((s) => !s)}
+                className={`rounded-md border px-2 py-1 text-[10px] ${showPaper ? "border-accent-400 text-accent-300" : "border-white/15 text-white/70"} hover:bg-white/10`}>
+                {showPaper ? "⊟ Paper" : "⊞ Paper"}
               </button>
               <button onClick={load} className="rounded-md border border-white/15 px-2 py-1 text-white/70 hover:bg-white/10">รีเฟรช</button>
               <button onClick={enterEdit} className="flex items-center gap-1 rounded-md bg-primary-500 px-3 py-1 font-semibold text-white hover:bg-primary-600">
@@ -426,7 +471,7 @@ export default function TradingOffice({ officeName }: Props) {
       <div ref={stageRef} className="relative flex-1 select-none overflow-hidden" onClick={() => editMode && setSelected(null)}>
         {bg ? (
           // eslint-disable-next-line @next/next/no-img-element
-          <img ref={imgRef} src={bg} alt="office" className="absolute inset-0 h-full w-full object-cover" draggable={false} onLoad={computeImgRect} />
+          <img ref={imgRef} src={bg} alt="office" className={`absolute inset-0 h-full w-full ${fitContain ? "object-contain" : "object-cover"}`} draggable={false} onLoad={computeImgRect} />
         ) : (
           <div className="absolute inset-0" style={{ background: "radial-gradient(ellipse at 50% 20%, #1a1040 0%, #0e0b16 70%)" }} />
         )}
@@ -518,9 +563,9 @@ export default function TradingOffice({ officeName }: Props) {
         {/* pipeline feed panel (view mode) */}
         {!editMode && (
           <>
-            {rankedCoins.length > 0 && (
+            {showSymbols && rankedCoins.length > 0 && (
               <DraggableBox title="📊 Symbols" defaultPos={{ x: 12, y: 300 }} storageKey="office-symbols-box">
-                <div className="min-w-[340px]">
+                <div className="w-[340px] max-w-[calc(100vw-0.75rem)]">
                 <div className="grid grid-cols-[1fr_auto_auto_1fr] gap-x-2 px-3 py-1.5 text-[9px] font-semibold text-white/40 border-b border-white/10">
                   <span>Symbol</span>
                   <span className="text-right">Price</span>
@@ -563,7 +608,7 @@ export default function TradingOffice({ officeName }: Props) {
             )}
             {showPipelineFeed && pipelineSteps.length > 0 && (
               <DraggableBox title="⚡ Pipeline" defaultPos={{ x: 480, y: 12 }} storageKey="office-pipeline-box">
-                <div className="w-[320px] flex flex-col max-h-[300px]">
+                <div className="w-[320px] max-w-[calc(100vw-0.75rem)] flex flex-col max-h-[300px]">
             <div className="flex items-center gap-2 border-b border-white/10 px-3 py-2">
               <span className="flex items-center gap-1 text-[10px] font-semibold text-white/60">
                 <span className="inline-block h-1.5 w-1.5 rounded-full bg-amber-400 animate-pulse" />
@@ -596,7 +641,7 @@ export default function TradingOffice({ officeName }: Props) {
         )}
 
         {/* news floating panel */}
-        {!editMode && newsAgg?.assets && newsAgg.assets.length > 0 && (
+        {!editMode && showNews && newsAgg?.assets && newsAgg.assets.length > 0 && (
           <DraggableBox title="📰 News" defaultPos={{ x: 12, y: 12 }} storageKey="office-news-box">
             <div className="flex-1 space-y-1 overflow-y-auto p-2">
               {newsAgg.assets.flatMap((a) => a.headlines).filter(Boolean).slice(0, 15).map((h, i) => (
@@ -613,7 +658,7 @@ export default function TradingOffice({ officeName }: Props) {
         )}
 
         {/* chat box */}
-        {!editMode && (
+        {!editMode && showChat && (
           <DraggableBox title="💬 Desk Chat" defaultPos={{ x: 280, y: 12 }} storageKey="office-chat-box"
             className="w-80">
             <div className="flex flex-col" style={{ height: 320 }}>
@@ -637,6 +682,54 @@ export default function TradingOffice({ officeName }: Props) {
                   className="rounded bg-accent-500 px-2 py-1 text-[11px] font-semibold text-black hover:bg-accent-400 disabled:opacity-40">
                   ส่ง
                 </button>
+              </div>
+            </div>
+          </DraggableBox>
+        )}
+
+        {/* paper trading floating box (live) */}
+        {!editMode && showPaper && (
+          <DraggableBox title="💼 Paper Trading" defaultPos={{ x: 12, y: 560 }} storageKey="office-paper-box">
+            <div className="w-[300px] max-w-[calc(100vw-0.75rem)]">
+              {(() => {
+                const pnl = paperStats?.total_pnl_thb ?? 0;
+                const wr = paperStats?.win_rate ?? 0;
+                return (
+                  <div className="grid grid-cols-3 gap-x-2 border-b border-white/10 px-3 py-1.5 text-[10px] text-white/50">
+                    <span>เทรด <b className="text-white/90">{paperStats?.total_trades ?? 0}</b></span>
+                    <span>ชนะ <b className={wr >= 50 ? "text-emerald-400" : "text-white/90"}>{wr}%</b></span>
+                    <span>PnL <b className={pnl >= 0 ? "text-emerald-400" : "text-red-400"}>{pnl >= 0 ? "+" : ""}{pnl.toLocaleString()}฿</b></span>
+                  </div>
+                );
+              })()}
+              <div className="px-3 py-1 text-[9px] font-semibold text-white/40 border-b border-white/10">
+                Open positions ({paperPositions.length})
+              </div>
+              <div className="px-3 py-1 space-y-0.5 max-h-[240px] overflow-y-auto">
+                {paperPositions.length === 0 && (
+                  <p className="py-2 text-center text-[10px] text-white/30">ยังไม่มี position เปิดอยู่</p>
+                )}
+                {paperPositions.map((p) => {
+                  const u = p.live;
+                  const up = u ? u.pnl_thb >= 0 : true;
+                  const isAuto = (p.strategy ?? "").startsWith("auto");
+                  return (
+                    <div key={p.id} className="grid grid-cols-[1fr_auto_auto] items-center gap-x-2 text-[11px]">
+                      <span className="truncate font-semibold text-white/90">
+                        {isAuto ? "🤖 " : ""}{p.symbol.replace("_THB", "")}
+                      </span>
+                      <span className="text-right font-mono text-white/50">
+                        @{p.entry_price ? (p.entry_price >= 1000 ? (p.entry_price / 1000).toFixed(1) + "K" : p.entry_price.toLocaleString(undefined, { maximumFractionDigits: 2 })) : "—"}
+                      </span>
+                      <span className={`w-20 text-right font-mono ${u ? (up ? "text-emerald-400" : "text-red-400") : "text-white/30"}`}>
+                        {u ? `${u.pnl_thb >= 0 ? "+" : ""}${u.pnl_thb.toLocaleString(undefined, { maximumFractionDigits: 0 })}฿ (${u.pnl_pct >= 0 ? "+" : ""}${u.pnl_pct.toFixed(1)}%)` : "—"}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="border-t border-white/10 px-3 py-1 text-[8px] text-white/25">
+                🤖 = auto · live ทุก {POLL_MS / 1000}s
               </div>
             </div>
           </DraggableBox>

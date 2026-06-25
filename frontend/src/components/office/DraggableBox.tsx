@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useCallback, type ReactNode } from "react";
+import { useState, useRef, useCallback, useEffect, type ReactNode } from "react";
 import { Minus, Plus, GripVertical } from "lucide-react";
 
 interface Pos { x: number; y: number }
@@ -28,35 +28,66 @@ export function DraggableBox({ children, title, defaultPos, className, storageKe
     if (storageKey) try { localStorage.setItem(storageKey, JSON.stringify(p)); } catch {}
   }, [storageKey]);
 
-  const onMouseDown = useCallback((e: React.MouseEvent) => {
-    if (!elRef.current) return;
-    const rect = elRef.current.getBoundingClientRect();
-    const parent = elRef.current.parentElement;
-    if (!parent) return;
+  // Keep the box inside its parent — important on small/mobile viewports where a
+  // stored desktop position (or a wide default) would render off-screen.
+  const clampToParent = useCallback(() => {
+    const el = elRef.current;
+    const parent = el?.parentElement;
+    if (!el || !parent) return;
+    const pr = parent.getBoundingClientRect();
+    const maxX = Math.max(0, pr.width - el.offsetWidth);
+    const maxY = Math.max(0, pr.height - el.offsetHeight);
+    setPos((p) => {
+      const nx = Math.min(maxX, Math.max(0, p.x));
+      const ny = Math.min(maxY, Math.max(0, p.y));
+      return nx === p.x && ny === p.y ? p : { x: nx, y: ny };
+    });
+  }, []);
+
+  useEffect(() => {
+    clampToParent();
+    window.addEventListener("resize", clampToParent);
+    return () => window.removeEventListener("resize", clampToParent);
+  }, [clampToParent]);
+
+  // Pointer events cover mouse + touch + pen with a single handler.
+  const onPointerDown = useCallback((e: React.PointerEvent) => {
+    if ((e.target as HTMLElement).closest("button")) return; // let the minimize button work
+    const el = elRef.current;
+    const parent = el?.parentElement;
+    if (!el || !parent) return;
+    const rect = el.getBoundingClientRect();
     const parentRect = parent.getBoundingClientRect();
     dragRef.current = { startX: e.clientX, startY: e.clientY, elX: rect.left - parentRect.left, elY: rect.top - parentRect.top, dragging: true };
-    const onMove = (ev: MouseEvent) => {
+    try { el.setPointerCapture(e.pointerId); } catch {}
+
+    const onMove = (ev: PointerEvent) => {
       if (!dragRef.current.dragging) return;
-      const nx = Math.max(0, dragRef.current.elX + ev.clientX - dragRef.current.startX);
-      const ny = Math.max(0, dragRef.current.elY + ev.clientY - dragRef.current.startY);
+      const pr = parent.getBoundingClientRect();
+      const maxX = Math.max(0, pr.width - el.offsetWidth);
+      const maxY = Math.max(0, pr.height - el.offsetHeight);
+      const nx = Math.min(maxX, Math.max(0, dragRef.current.elX + ev.clientX - dragRef.current.startX));
+      const ny = Math.min(maxY, Math.max(0, dragRef.current.elY + ev.clientY - dragRef.current.startY));
       setPos({ x: nx, y: ny });
     };
     const onUp = () => {
       dragRef.current.dragging = false;
       savePos(posRef.current);
-      document.removeEventListener("mousemove", onMove);
-      document.removeEventListener("mouseup", onUp);
+      document.removeEventListener("pointermove", onMove);
+      document.removeEventListener("pointerup", onUp);
+      document.removeEventListener("pointercancel", onUp);
     };
-    document.addEventListener("mousemove", onMove);
-    document.addEventListener("mouseup", onUp);
+    document.addEventListener("pointermove", onMove);
+    document.addEventListener("pointerup", onUp);
+    document.addEventListener("pointercancel", onUp);
   }, [savePos]);
 
   return (
     <div ref={elRef}
-      style={{ left: pos.x, right: "auto", top: pos.y, bottom: "auto" }}
-      className={`absolute z-30 flex flex-col rounded-xl border border-white/10 bg-black/80 backdrop-blur-md ${className ?? ""} ${minimized ? "min-w-[200px]" : ""}`}>
-      <div className="flex items-center gap-1.5 border-b border-white/10 px-2 py-1.5 cursor-move select-none"
-        onMouseDown={onMouseDown}>
+      style={{ left: pos.x, right: "auto", top: pos.y, bottom: "auto", maxWidth: "calc(100vw - 0.5rem)" }}
+      className={`absolute z-30 flex max-h-[calc(100%-0.5rem)] flex-col rounded-xl border border-white/10 bg-black/80 backdrop-blur-md ${className ?? ""} ${minimized ? "min-w-[200px]" : ""}`}>
+      <div className="flex items-center gap-1.5 border-b border-white/10 px-2 py-1.5 cursor-move select-none touch-none"
+        onPointerDown={onPointerDown}>
         <GripVertical size={12} className="text-white/30 shrink-0" />
         <span className="flex-1 text-[10px] font-semibold text-white/60 truncate">{title}</span>
         <button onClick={() => setMinimized(!minimized)} className="rounded p-0.5 text-white/40 hover:text-white/80 transition-colors">

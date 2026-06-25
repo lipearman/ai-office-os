@@ -10,11 +10,12 @@ from app.trading.bitkub import BitkubClient, to_tradingview_symbol, BitkubError
 from app.trading.indicators import compute_features
 from app.trading.mtf import build_snapshot, build_daily_brief, MTFSnapshot
 from app.trading.backtest import (
-    run_backtest, BacktestParams, prepare, _valid_i, _entry_ok_i,
+    run_backtest, walk_forward_winrate, BacktestParams, prepare, _valid_i, _entry_ok_i,
 )
 from app.trading.indicators import indicator_frame
 from app.trading.optimizer import optimize
 from app.trading.ml import ml_report
+from app.core.config import settings
 
 
 async def analyze_symbol(client: BitkubClient, symbol: str) -> MTFSnapshot | None:
@@ -109,6 +110,7 @@ async def ml_symbol(
 
 async def daily_opportunity(
     client: BitkubClient, symbol: str, cfg: dict | None = None, default_tf: str = "1H",
+    regime: dict | None = None, ml_prob: float | None = None,
 ) -> dict | None:
     """Estimate today's winning chance for a symbol.
 
@@ -136,6 +138,12 @@ async def daily_opportunity(
     pf = hist.get("profit_factor")
     n = hist.get("total_trades", 0)
     exp = hist.get("expectancy_pct")
+    # walk-forward view: is the edge consistent across time + still alive recently?
+    # (the single backtest above is all-history; this is the more honest signal)
+    wf = walk_forward_winrate(candles, params)
+    oos_wr = wf.get("oos_win_rate")
+    recent_wr = wf.get("recent_win_rate")
+    wf_std = wf.get("wf_stability_std")
 
     # today's signal: does the entry fire on the latest closed bar?
     df = indicator_frame(candles, closed_only=True).reset_index(drop=True)
@@ -153,15 +161,33 @@ async def daily_opportunity(
     reasons: list[str] = []
 
     if signal_today:
-        win_chance = wr if (wr is not None and n >= 5) else 50.0
+        # win chance: prefer the walk-forward (out-of-sample) view, weighted toward
+        # recent performance, so a coin whose edge decayed lately scores lower.
+        if oos_wr is not None and recent_wr is not None:
+            win_chance = round(0.4 * oos_wr + 0.6 * recent_wr, 1)
+        elif oos_wr is not None:
+            win_chance = oos_wr
+        elif wr is not None and n >= 5:
+            win_chance = wr
+        else:
+            win_chance = 50.0
+        # an unstable edge across periods (high fold spread) lowers confidence
+        stab_factor = max(0.5, 1.0 - (wf_std or 0) / 40.0)
+        eff_conf = confidence * stab_factor
         # opportunity score: win chance, tempered by edge quality + confidence
         edge_mult = 1.0 if has_edge else (0.8 if (pf or 0) >= 1.0 else 0.6)
-        score = round(win_chance * (0.55 + 0.45 * confidence) * edge_mult, 1)
+        score = round(win_chance * (0.55 + 0.45 * eff_conf) * edge_mult, 1)
         reasons.append(f"✅ สัญญาณ {strategy} เกิดวันนี้ ({tf})")
-        if wr is not None and n >= 5:
+        if oos_wr is not None:
+            reasons.append(f"walk-forward: เฉลี่ย {oos_wr}% · ล่าสุด {recent_wr}% (อดีตรวม {wr}% จาก {n} เทรด)")
+        elif wr is not None and n >= 5:
             reasons.append(f"อดีตชนะ {wr}% จาก {n} เทรด (PF {pf}, expectancy {exp}%)")
         else:
             reasons.append(f"ตัวอย่างอดีตน้อย ({n} เทรด) — ความเชื่อมั่นต่ำ")
+        if recent_wr is not None and oos_wr is not None and recent_wr < oos_wr - 10:
+            reasons.append(f"⚠️ edge ระยะหลังอ่อนลง (ล่าสุด {recent_wr}% < เฉลี่ย {oos_wr}%)")
+        if wf_std is not None and wf_std > 15:
+            reasons.append(f"⚠️ win-rate ไม่เสถียรข้ามช่วงเวลา (±{wf_std}%)")
         if not has_edge:
             reasons.append("⚠️ กลยุทธ์นี้ยังไม่พิสูจน์ว่ามี edge ชัด — ระวัง")
         if confidence < 0.5:
@@ -182,17 +208,41 @@ async def daily_opportunity(
         else:
             reasons.append("กลยุทธ์ยังไม่มี edge ชัดในอดีต")
 
+    # market-regime overlay: a long pullback that fights the BTC trend is riskier,
+    # so discount its score (ranking) and tag the bias for the auto-trader.
+    bias = (regime or {}).get("bias", "neutral")
+    regime_mult = {"bullish": 1.0, "neutral": 0.92, "bearish": 0.7}.get(bias, 1.0)
+    score = round(score * regime_mult, 1)
+    if signal_today and bias == "bearish":
+        reasons.append("⚠️ ตลาดรวมขาลง (BTC) — long สวนเทรนด์ เสี่ยงสูง")
+    elif signal_today and bias == "bullish":
+        reasons.append("ตลาดรวมขาขึ้น (BTC) หนุนฝั่ง long")
+
+    # ML vote (cached, opt-in): confirm/veto the rule signal — advisory only,
+    # never a hard block (the model is a 'human gate' helper, not a trader).
+    if ml_prob is not None and signal_today:
+        if ml_prob < settings.ML_VOTE_MIN_PROB:
+            score = round(score * 0.7, 1)
+            reasons.append(f"⚠️ ML ไม่ยืนยัน (P_up {ml_prob:.0%})")
+        else:
+            score = round(score * 1.1, 1)
+            reasons.append(f"✅ ML ยืนยันสัญญาณ (P_up {ml_prob:.0%})")
+
     return {
         "symbol": tv,
         "timeframe": tf,
         "strategy": strategy,
         "assigned": cfg is not None,
         "signal_today": signal_today,
+        "market_bias": bias,
+        "ml_prob": round(ml_prob, 3) if ml_prob is not None else None,
         "win_chance_pct": win_chance,
         "opportunity_score": score,
         "label": label,
         "reasons": reasons,
-        "historical": {"win_rate": wr, "profit_factor": pf, "expectancy_pct": exp, "trades": n},
+        "historical": {"win_rate": wr, "profit_factor": pf, "expectancy_pct": exp, "trades": n,
+                       "oos_win_rate": oos_wr, "recent_win_rate": recent_wr,
+                       "wf_stability_std": wf_std, "wf_folds": wf.get("wf_folds")},
         "price": round(close, 2),
         "plan": {"entry": round(close, 2), "stop": round(stop, 2),
                  "target": round(target, 2), "rr": params.tp_rr} if signal_today else None,
@@ -200,17 +250,55 @@ async def daily_opportunity(
     }
 
 
-async def daily_opportunities(items: list[dict], concurrency: int = 4) -> list[dict]:
-    """Evaluate each watchlist item (symbol + assigned cfg) → ranked by score."""
+async def market_regime(client: BitkubClient, symbol: str = "BTC_THB", tf: str = "1D") -> dict:
+    """Overall market bias from the BTC trend (close vs EMA200, EMA50 vs EMA200).
+
+    The desk strategy is a LONG-only pullback, so setups taken in a downtrend
+    fight the tide and are riskier — the scan discounts them and auto-trade
+    demands a stronger edge before opening one. Best-effort → neutral on any issue.
+    """
+    try:
+        candles = await client.fetch_ohlcv(symbol, tf, limit=320)
+        df = indicator_frame(candles, closed_only=True).reset_index(drop=True)
+        row = df.iloc[-1]
+        close = float(row["close"]); ema50 = float(row["ema50"]); ema200 = float(row["ema200"])
+    except Exception:
+        return {"bias": "neutral", "detail": "ประเมินเทรนด์ตลาดไม่ได้"}
+    # NaN / bad-data guard (x != x is True only for NaN)
+    if not (ema200 > 0) or ema50 != ema50 or ema200 != ema200:
+        return {"bias": "neutral", "detail": "ข้อมูลเทรนด์ไม่พอ"}
+    if close > ema200 and ema50 >= ema200:
+        bias = "bullish"
+    elif close < ema200 and ema50 <= ema200:
+        bias = "bearish"
+    else:
+        bias = "neutral"
+    return {"bias": bias, "tf": tf, "detail": f"BTC {bias}"}
+
+
+async def daily_opportunities(items: list[dict], concurrency: int = 4,
+                              ml_votes: dict | None = None) -> list[dict]:
+    """Evaluate each watchlist item (symbol + assigned cfg) → ranked by score.
+
+    `ml_votes` = {symbol: P(up)} cached by the background ML job; passed through
+    so the rule signal gets an ML confirm/veto without training inline."""
     client = BitkubClient()
+    regime = await market_regime(client)          # market-wide bias, computed once
+    votes = ml_votes or {}
     sem = asyncio.Semaphore(concurrency)
 
     async def one(it: dict) -> dict | None:
         async with sem:
-            return await daily_opportunity(client, it["symbol"], it.get("cfg"))
+            try:
+                return await daily_opportunity(client, it["symbol"], it.get("cfg"),
+                                               regime=regime, ml_prob=votes.get(it["symbol"]))
+            except Exception:
+                # a single bad/illiquid symbol (esp. from market discovery) must
+                # not abort the whole scan
+                return None
 
-    results = await asyncio.gather(*[one(it) for it in items])
-    out = [r for r in results if r]
+    results = await asyncio.gather(*[one(it) for it in items], return_exceptions=True)
+    out = [r for r in results if isinstance(r, dict)]
     # signals-with-today first, then by opportunity score
     out.sort(key=lambda r: (0 if r["signal_today"] else 1, -r["opportunity_score"]))
     return out

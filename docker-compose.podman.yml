@@ -1,0 +1,116 @@
+# Podman deployment for this machine — host ports 9002+ (9000/9001 are taken).
+# Code is baked into the images (no bind mounts) so it runs cleanly on the
+# WSL podman machine. Bring up:  podman compose -f docker-compose.podman.yml up -d --build
+#
+#   frontend  -> http://localhost:9002   (open this)
+#   backend   -> http://localhost:9003   (API + /docs)
+#   postgres  -> localhost:9004
+#   redis     -> localhost:9005
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: aioffice_pg
+    environment:
+      POSTGRES_USER: aioffice
+      POSTGRES_PASSWORD: aioffice_secret
+      POSTGRES_DB: aioffice_db
+    ports:
+      - "9004:5432"
+    volumes:
+      - aioffice_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aioffice"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: aioffice_redis
+    ports:
+      - "9005:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: aioffice_backend
+    environment:
+      DATABASE_URL: postgresql+asyncpg://aioffice:aioffice_secret@postgres:5432/aioffice_db
+      REDIS_URL: redis://redis:6379
+      SECRET_KEY: dev_secret_key_change_in_production
+      ENVIRONMENT: development
+      # frontend's browser origin must be allowed for CORS
+      ALLOWED_ORIGINS: '["http://localhost:9002","http://localhost:3000"]'
+      # self-hosted Ollama (best-effort; falls back to deterministic if unreachable from the container)
+      OLLAMA_BASE_URL: http://llm-server:11434
+      DEFAULT_LLM_PROVIDER: ollama
+      DEFAULT_LLM_MODEL: qwen2.5:7b-instruct
+      # desk "color commentary" via the light enrich layer (~1 LLM call for all 7
+      # roles, ~9s) on top of the deterministic 7-role desk. Model: qwen2.5:7b-instruct
+      # (~5s/call, installed on llm-server). The heavy per-coin LangGraph pipeline is
+      # left OFF (DESK_GRAPH_ENABLED default false) — it's ~30+ calls / 127s on the
+      # shared Ollama and emits a coin-centric desk. Flip it on only if you want the
+      # step-by-step Pipeline feed and can spare the budget.
+      DESK_LLM_ENABLED: "true"
+      # auto-run the step-by-step Pipeline graph on its own schedule (decoupled —
+      # never touches the desk snapshot, single-flight locked so runs don't overlap).
+      # 300s = every 5 min; set 180 for every 3 min.
+      DESK_GRAPH_AUTO: "true"
+      DESK_GRAPH_INTERVAL_SECONDS: "300"
+      # ML vote (XGBoost ensemble) as a confirm/veto on the rule signal. A
+      # background job (every 30 min) trains per coin + caches P(up); the scan
+      # reads the cache and nudges the score (confirm x1.1 / veto x0.7). Heavy —
+      # set "false" to disable.
+      DESK_ML_VOTE_ENABLED: "true"
+      # desk market discovery — scan top-N THB pairs by volume on top of watchlist
+      DESK_SCAN_ENABLED: "true"
+      DESK_SCAN_TOP_N: "20"
+      # auto paper-trading — worker opens/closes simulated trades on its own
+      # (opens on a fresh same-day signal with win >= 30%)
+      AUTO_PAPER_ENABLED: "true"
+      AUTO_PAPER_MAX_POSITIONS: "5"
+      AUTO_PAPER_SIZE_THB: "1000"
+      AUTO_PAPER_MIN_WIN_PCT: "30"
+      AUTO_PAPER_REQUIRE_SIGNAL: "true"
+    ports:
+      - "9003:8000"
+    volumes:
+      # persist uploaded scene/avatar images across container rebuilds
+      # (otherwise /office backgrounds vanish on every `up --build`)
+      - aioffice_uploads:/app/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # apply migrations + seed the demo/test account, then serve
+    command: >
+      sh -c "alembic upgrade head &&
+             python seed_demo.py &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000"
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: aioffice_frontend
+    environment:
+      # same-origin: browser calls the frontend; Next proxies /api,/ws,/static to
+      # the backend (works on localhost AND behind a single Cloudflare tunnel)
+      NEXT_PUBLIC_API_URL: ""
+      NEXT_PUBLIC_WS_URL: ""
+      BACKEND_ORIGIN: http://backend:8000
+    ports:
+      - "9002:3000"
+    depends_on:
+      - backend
+
+volumes:
+  aioffice_pgdata:
+  aioffice_uploads:

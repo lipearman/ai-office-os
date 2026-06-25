@@ -11,10 +11,13 @@ The API only reads the snapshots these jobs write.
 """
 from __future__ import annotations
 
+import asyncio
+
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy import select
 import structlog
 
+from app.core.config import settings
 from app.core.database import AsyncSessionLocal
 from app.models.watchlist import WatchlistItem
 from app.models.trading_state import DeskSnapshot
@@ -53,9 +56,68 @@ async def heavy_tick() -> None:
     for ws in ws_ids:
         try:
             async with AsyncSessionLocal() as db:
-                await desk_store.compute_full(db, ws)
+                # watchdog: cancel a stuck compute so the next tick can run
+                # (otherwise a hung LLM/HTTP call blocks the job forever and
+                # APScheduler skips every later run — "ran once then stopped")
+                await asyncio.wait_for(
+                    desk_store.compute_full(db, ws),
+                    timeout=settings.HEAVY_TICK_TIMEOUT_SECONDS,
+                )
+        except asyncio.TimeoutError:
+            log.warning("desk_heavy_ws_timeout", workspace=str(ws),
+                        timeout=settings.HEAVY_TICK_TIMEOUT_SECONDS)
         except Exception as e:
             log.warning("desk_heavy_ws_failed", workspace=str(ws), error=str(e))
+
+
+async def pipeline_tick() -> None:
+    """Run the per-coin LangGraph pipeline feed on its own (slower) schedule.
+
+    Decoupled from heavy_tick: it only refreshes the step-by-step Pipeline feed
+    (never the desk snapshot), and run_pipeline_only holds a single-flight lock so
+    it won't overlap a manual "Run Pipeline" or a previous auto run. Long but async
+    (LLM awaits), so the fast tick + API keep serving while it runs."""
+    try:
+        ws_ids = await _workspaces_with_watchlist()
+    except Exception as e:
+        log.warning("desk_pipeline_list_failed", error=str(e))
+        return
+    for ws in ws_ids:
+        try:
+            async with AsyncSessionLocal() as db:
+                await asyncio.wait_for(
+                    desk_store.run_pipeline_only(db, ws),
+                    timeout=settings.PIPELINE_TICK_TIMEOUT_SECONDS,
+                )
+        except asyncio.TimeoutError:
+            log.warning("desk_pipeline_ws_timeout", workspace=str(ws),
+                        timeout=settings.PIPELINE_TICK_TIMEOUT_SECONDS)
+        except Exception as e:
+            log.warning("desk_pipeline_ws_failed", workspace=str(ws), error=str(e))
+
+
+async def ml_vote_tick() -> None:
+    """Refresh the cached ML votes (P(up) per symbol) on a slow schedule.
+
+    Heavy (trains XGBoost per coin) but decoupled + single-flight locked, so the
+    scan only reads the cache. Opt-in via DESK_ML_VOTE_ENABLED."""
+    try:
+        ws_ids = await _workspaces_with_watchlist()
+    except Exception as e:
+        log.warning("desk_ml_list_failed", error=str(e))
+        return
+    for ws in ws_ids:
+        try:
+            async with AsyncSessionLocal() as db:
+                await asyncio.wait_for(
+                    desk_store.refresh_ml_votes(db, ws),
+                    timeout=settings.ML_VOTE_TICK_TIMEOUT_SECONDS,
+                )
+        except asyncio.TimeoutError:
+            log.warning("desk_ml_ws_timeout", workspace=str(ws),
+                        timeout=settings.ML_VOTE_TICK_TIMEOUT_SECONDS)
+        except Exception as e:
+            log.warning("desk_ml_ws_failed", workspace=str(ws), error=str(e))
 
 
 async def fast_tick() -> None:
@@ -82,8 +144,20 @@ def start_scheduler() -> None:
     _scheduler.add_job(heavy_tick, "interval", seconds=HEAVY_SECONDS, id="desk_heavy")
     _scheduler.add_job(fast_tick, "interval", seconds=FAST_SECONDS, id="desk_fast")
     _scheduler.add_job(heavy_tick, id="desk_heavy_boot")  # immediate first run
+    # decoupled auto pipeline (step-by-step feed) — own schedule, won't slow the desk
+    if settings.DESK_GRAPH_AUTO:
+        _scheduler.add_job(pipeline_tick, "interval",
+                           seconds=settings.DESK_GRAPH_INTERVAL_SECONDS,
+                           id="desk_pipeline", max_instances=1, coalesce=True)
+    # opt-in ML vote refresh (heavy) — own slow schedule, single-flight locked
+    if settings.DESK_ML_VOTE_ENABLED:
+        _scheduler.add_job(ml_vote_tick, "interval",
+                           seconds=settings.ML_VOTE_INTERVAL_SECONDS,
+                           id="desk_ml_vote", max_instances=1, coalesce=True)
     _scheduler.start()
-    log.info("trading.scheduler.started", heavy_seconds=HEAVY_SECONDS, fast_seconds=FAST_SECONDS)
+    log.info("trading.scheduler.started", heavy_seconds=HEAVY_SECONDS, fast_seconds=FAST_SECONDS,
+             pipeline_auto=settings.DESK_GRAPH_AUTO,
+             pipeline_seconds=settings.DESK_GRAPH_INTERVAL_SECONDS if settings.DESK_GRAPH_AUTO else None)
 
 
 def stop_scheduler() -> None:

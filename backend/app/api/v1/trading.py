@@ -246,17 +246,9 @@ async def opportunities(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """หาเหรียญที่มีโอกาสชนะวันนี้ — ใช้กลยุทธ์ที่ผูกไว้ต่อ symbol แล้วจัดอันดับ."""
-    result = await db.execute(
-        select(WatchlistItem).where(
-            WatchlistItem.workspace_id == workspace_id,
-            WatchlistItem.enabled == True,  # noqa: E712
-        )
-    )
-    items = [
-        {"symbol": w.symbol, "cfg": (w.strategies[0] if w.strategies else None)}
-        for w in result.scalars().all()
-    ]
+    """หาเหรียญที่มีโอกาสชนะวันนี้ — watchlist + market-scan (top-N by volume) → จัดอันดับ."""
+    # same source as the /office desk: watchlist (pinned) + scan discoveries
+    items = await desk_store.watchlist_plus_discovered(db, workspace_id)
     if not items:
         return {"results": [], "count": 0}
     results = await daily_opportunities(items)
@@ -533,7 +525,10 @@ async def trigger_pipeline(workspace_id: str):
     async def _run():
         async with AsyncSessionLocal() as db:
             try:
-                await desk_store.compute_full(db, uuid.UUID(workspace_id))
+                # pipeline-feed only: runs the LangGraph for the step-by-step feed
+                # without overwriting the desk snapshot, and shares the single-flight
+                # lock with the auto pipeline job so runs never overlap.
+                await desk_store.run_pipeline_only(db, uuid.UUID(workspace_id))
             except Exception:
                 pass
 
