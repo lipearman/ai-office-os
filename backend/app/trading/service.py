@@ -10,7 +10,7 @@ from app.trading.bitkub import BitkubClient, to_tradingview_symbol, BitkubError
 from app.trading.indicators import compute_features
 from app.trading.mtf import build_snapshot, build_daily_brief, MTFSnapshot
 from app.trading.backtest import (
-    run_backtest, BacktestParams, prepare, _valid_i, _entry_ok_i,
+    run_backtest, walk_forward_winrate, BacktestParams, prepare, _valid_i, _entry_ok_i,
 )
 from app.trading.indicators import indicator_frame
 from app.trading.optimizer import optimize
@@ -136,6 +136,12 @@ async def daily_opportunity(
     pf = hist.get("profit_factor")
     n = hist.get("total_trades", 0)
     exp = hist.get("expectancy_pct")
+    # walk-forward view: is the edge consistent across time + still alive recently?
+    # (the single backtest above is all-history; this is the more honest signal)
+    wf = walk_forward_winrate(candles, params)
+    oos_wr = wf.get("oos_win_rate")
+    recent_wr = wf.get("recent_win_rate")
+    wf_std = wf.get("wf_stability_std")
 
     # today's signal: does the entry fire on the latest closed bar?
     df = indicator_frame(candles, closed_only=True).reset_index(drop=True)
@@ -153,15 +159,33 @@ async def daily_opportunity(
     reasons: list[str] = []
 
     if signal_today:
-        win_chance = wr if (wr is not None and n >= 5) else 50.0
+        # win chance: prefer the walk-forward (out-of-sample) view, weighted toward
+        # recent performance, so a coin whose edge decayed lately scores lower.
+        if oos_wr is not None and recent_wr is not None:
+            win_chance = round(0.4 * oos_wr + 0.6 * recent_wr, 1)
+        elif oos_wr is not None:
+            win_chance = oos_wr
+        elif wr is not None and n >= 5:
+            win_chance = wr
+        else:
+            win_chance = 50.0
+        # an unstable edge across periods (high fold spread) lowers confidence
+        stab_factor = max(0.5, 1.0 - (wf_std or 0) / 40.0)
+        eff_conf = confidence * stab_factor
         # opportunity score: win chance, tempered by edge quality + confidence
         edge_mult = 1.0 if has_edge else (0.8 if (pf or 0) >= 1.0 else 0.6)
-        score = round(win_chance * (0.55 + 0.45 * confidence) * edge_mult, 1)
+        score = round(win_chance * (0.55 + 0.45 * eff_conf) * edge_mult, 1)
         reasons.append(f"✅ สัญญาณ {strategy} เกิดวันนี้ ({tf})")
-        if wr is not None and n >= 5:
+        if oos_wr is not None:
+            reasons.append(f"walk-forward: เฉลี่ย {oos_wr}% · ล่าสุด {recent_wr}% (อดีตรวม {wr}% จาก {n} เทรด)")
+        elif wr is not None and n >= 5:
             reasons.append(f"อดีตชนะ {wr}% จาก {n} เทรด (PF {pf}, expectancy {exp}%)")
         else:
             reasons.append(f"ตัวอย่างอดีตน้อย ({n} เทรด) — ความเชื่อมั่นต่ำ")
+        if recent_wr is not None and oos_wr is not None and recent_wr < oos_wr - 10:
+            reasons.append(f"⚠️ edge ระยะหลังอ่อนลง (ล่าสุด {recent_wr}% < เฉลี่ย {oos_wr}%)")
+        if wf_std is not None and wf_std > 15:
+            reasons.append(f"⚠️ win-rate ไม่เสถียรข้ามช่วงเวลา (±{wf_std}%)")
         if not has_edge:
             reasons.append("⚠️ กลยุทธ์นี้ยังไม่พิสูจน์ว่ามี edge ชัด — ระวัง")
         if confidence < 0.5:
@@ -192,7 +216,9 @@ async def daily_opportunity(
         "opportunity_score": score,
         "label": label,
         "reasons": reasons,
-        "historical": {"win_rate": wr, "profit_factor": pf, "expectancy_pct": exp, "trades": n},
+        "historical": {"win_rate": wr, "profit_factor": pf, "expectancy_pct": exp, "trades": n,
+                       "oos_win_rate": oos_wr, "recent_win_rate": recent_wr,
+                       "wf_stability_std": wf_std, "wf_folds": wf.get("wf_folds")},
         "price": round(close, 2),
         "plan": {"entry": round(close, 2), "stop": round(stop, 2),
                  "target": round(target, 2), "rr": params.tp_rr} if signal_today else None,

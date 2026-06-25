@@ -251,6 +251,56 @@ def run_backtest(
     return res
 
 
+def walk_forward_winrate(
+    candles: list[Candle], params: BacktestParams | None = None, folds: int = 4
+) -> dict:
+    """Walk-forward win rate: evaluate the (fixed-rule) strategy across consecutive
+    time folds, so we can see whether the edge HOLDS recently and consistently
+    instead of trusting one all-history number.
+
+    Returns {} when there isn't enough history. `oos_win_rate` equal-weights folds
+    (each period counts the same), `recent_win_rate` is the most recent fold, and
+    `wf_stability_std` is the spread of fold win-rates (high = unreliable).
+    Cheap — just a few extra simulate() passes on slices of precomputed arrays.
+    """
+    p = params or BacktestParams()
+    df = indicator_frame(candles, closed_only=True).reset_index(drop=True)
+    n = len(df)
+    if n < 120 or folds < 2:
+        return {}
+    C = prepare(df)
+    start = min(200, n // 5)          # warmup so ema200 etc. are valid before entries
+    seg = (n - start) // folds
+    if seg < 20:
+        return {}
+    fold_wr: list[float] = []
+    fold_tn: list[int] = []
+    recent_wr: float | None = None
+    for k in range(folds):
+        lo = start + k * seg
+        hi = n if k == folds - 1 else start + (k + 1) * seg
+        st, _ = _compute_stats(simulate(C, p, lo, hi))
+        tn = st.get("total_trades", 0)
+        wr = st.get("win_rate")
+        if tn > 0 and wr is not None:
+            fold_wr.append(wr)
+            fold_tn.append(tn)
+        if k == folds - 1:
+            recent_wr = wr if (tn > 0 and wr is not None) else None
+    if not fold_wr:
+        return {}
+    mean_wr = sum(fold_wr) / len(fold_wr)
+    std = (sum((x - mean_wr) ** 2 for x in fold_wr) / len(fold_wr)) ** 0.5
+    return {
+        "oos_win_rate": round(mean_wr, 1),
+        "recent_win_rate": recent_wr,
+        "fold_win_rates": [round(x, 1) for x in fold_wr],
+        "wf_stability_std": round(std, 1),
+        "wf_folds": len(fold_wr),
+        "wf_total_trades": sum(fold_tn),
+    }
+
+
 def _compute_stats(trades: list[Trade]) -> tuple[dict, list[dict]]:
     n = len(trades)
     if n == 0:
