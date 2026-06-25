@@ -27,6 +27,7 @@ class BacktestParams:
     stop_atr: float = 1.5
     tp_rr: float = 2.0
     fee: float = 0.0025          # per side
+    slippage: float = 0.0005     # per side — assume fills a touch worse than signal price
     rsi_exit: float = 70.0
     # ── rsi_reversion template ──
     rsi_os: float = 30.0         # oversold entry
@@ -49,7 +50,7 @@ class Trade:
     exit_price: float
     exit_reason: str             # take_profit | stop_loss | signal_exit | eod
     bars_held: int
-    pnl_pct: float               # net of fees
+    pnl_pct: float               # net of fees + slippage
     r_multiple: float
     result: str                  # WIN | LOSS | BREAKEVEN
     reason: str                  # why we entered
@@ -160,6 +161,7 @@ def simulate(C: dict, p: BacktestParams, lo: int = 0, hi: int | None = None,
     adx_a = C["adx14"]; ts_a = C["ts"]
     trades: list[Trade] = []
     fee_round = 2 * p.fee
+    slip_round = 2 * p.slippage   # entry fills higher + exit fills lower → round-trip cost
     in_pos = False
     entry_price = stop = target = 0.0
     entry_idx = 0
@@ -197,7 +199,7 @@ def simulate(C: dict, p: BacktestParams, lo: int = 0, hi: int | None = None,
             exit_price, exit_reason = close_a[i], "signal_exit"
 
         if exit_price is not None:
-            net = (exit_price / entry_price - 1.0) - fee_round
+            net = (exit_price / entry_price - 1.0) - fee_round - slip_round
             risk = entry_price - stop
             trades.append(Trade(
                 entry_at=str(ts_a[entry_idx]),
@@ -217,7 +219,7 @@ def simulate(C: dict, p: BacktestParams, lo: int = 0, hi: int | None = None,
 
     if in_pos:
         exit_price = close_a[hi - 1]
-        net = (exit_price / entry_price - 1.0) - fee_round
+        net = (exit_price / entry_price - 1.0) - fee_round - slip_round
         risk = entry_price - stop
         trades.append(Trade(
             entry_at=str(ts_a[entry_idx]),
