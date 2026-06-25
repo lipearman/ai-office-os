@@ -298,8 +298,13 @@ async def get_snapshot(db: AsyncSession, workspace_id) -> DeskSnapshot | None:
     return res.scalar_one_or_none()
 
 
-async def compute_full(db: AsyncSession, workspace_id) -> DeskSnapshot:
-    """Heavy tick: full analysis → LangGraph pipeline → upsert snapshot + detect alerts."""
+async def compute_full(db: AsyncSession, workspace_id, force_graph: bool = False) -> DeskSnapshot:
+    """Heavy tick: full analysis → LangGraph pipeline → upsert snapshot + detect alerts.
+
+    `force_graph=True` runs the per-coin LangGraph even when DESK_GRAPH_ENABLED is
+    off — used by the manual "Run Pipeline" trigger so users can see the step-by-step
+    feed on demand, while the periodic tick stays fast/deterministic.
+    """
     # watchlist (pinned) + market-scan discoveries (top-N by volume)
     items = await watchlist_plus_discovered(db, workspace_id)
     opps = await daily_opportunities(items) if items else []
@@ -366,7 +371,7 @@ async def compute_full(db: AsyncSession, workspace_id) -> DeskSnapshot:
     graph_commentary: dict = {}
     characters = det_chars
     try:
-        stream = graph.astream(state) if settings.DESK_GRAPH_ENABLED else _empty_aiter()
+        stream = graph.astream(state) if (settings.DESK_GRAPH_ENABLED or force_graph) else _empty_aiter()
         async for step_data in stream:
             for node_id, output in step_data.items():
                 if node_id == "__end__":

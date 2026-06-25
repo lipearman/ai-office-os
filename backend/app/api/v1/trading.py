@@ -525,7 +525,9 @@ async def trigger_pipeline(workspace_id: str):
     async def _run():
         async with AsyncSessionLocal() as db:
             try:
-                await desk_store.compute_full(db, uuid.UUID(workspace_id))
+                # force the LangGraph so the step-by-step feed runs even when the
+                # periodic tick keeps it off (DESK_GRAPH_ENABLED=false)
+                await desk_store.compute_full(db, uuid.UUID(workspace_id), force_graph=True)
             except Exception:
                 pass
 
