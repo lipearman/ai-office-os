@@ -48,7 +48,11 @@ async def auto_open(db: AsyncSession, workspace_id, opps: list[dict], prices: di
             break
         if settings.AUTO_PAPER_REQUIRE_SIGNAL and not o.get("signal_today"):
             continue
-        if (o.get("win_chance_pct") or 0) < settings.AUTO_PAPER_MIN_WIN_PCT:
+        # against a bearish BTC trend, demand a stronger edge to open a long
+        min_win = settings.AUTO_PAPER_MIN_WIN_PCT
+        if o.get("market_bias") == "bearish":
+            min_win += 15
+        if (o.get("win_chance_pct") or 0) < min_win:
             continue
         sym = o["symbol"]
         if sym in open_syms:

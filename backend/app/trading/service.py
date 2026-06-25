@@ -109,6 +109,7 @@ async def ml_symbol(
 
 async def daily_opportunity(
     client: BitkubClient, symbol: str, cfg: dict | None = None, default_tf: str = "1H",
+    regime: dict | None = None,
 ) -> dict | None:
     """Estimate today's winning chance for a symbol.
 
@@ -206,12 +207,23 @@ async def daily_opportunity(
         else:
             reasons.append("กลยุทธ์ยังไม่มี edge ชัดในอดีต")
 
+    # market-regime overlay: a long pullback that fights the BTC trend is riskier,
+    # so discount its score (ranking) and tag the bias for the auto-trader.
+    bias = (regime or {}).get("bias", "neutral")
+    regime_mult = {"bullish": 1.0, "neutral": 0.92, "bearish": 0.7}.get(bias, 1.0)
+    score = round(score * regime_mult, 1)
+    if signal_today and bias == "bearish":
+        reasons.append("⚠️ ตลาดรวมขาลง (BTC) — long สวนเทรนด์ เสี่ยงสูง")
+    elif signal_today and bias == "bullish":
+        reasons.append("ตลาดรวมขาขึ้น (BTC) หนุนฝั่ง long")
+
     return {
         "symbol": tv,
         "timeframe": tf,
         "strategy": strategy,
         "assigned": cfg is not None,
         "signal_today": signal_today,
+        "market_bias": bias,
         "win_chance_pct": win_chance,
         "opportunity_score": score,
         "label": label,
@@ -226,15 +238,42 @@ async def daily_opportunity(
     }
 
 
+async def market_regime(client: BitkubClient, symbol: str = "BTC_THB", tf: str = "1D") -> dict:
+    """Overall market bias from the BTC trend (close vs EMA200, EMA50 vs EMA200).
+
+    The desk strategy is a LONG-only pullback, so setups taken in a downtrend
+    fight the tide and are riskier — the scan discounts them and auto-trade
+    demands a stronger edge before opening one. Best-effort → neutral on any issue.
+    """
+    try:
+        candles = await client.fetch_ohlcv(symbol, tf, limit=320)
+        df = indicator_frame(candles, closed_only=True).reset_index(drop=True)
+        row = df.iloc[-1]
+        close = float(row["close"]); ema50 = float(row["ema50"]); ema200 = float(row["ema200"])
+    except Exception:
+        return {"bias": "neutral", "detail": "ประเมินเทรนด์ตลาดไม่ได้"}
+    # NaN / bad-data guard (x != x is True only for NaN)
+    if not (ema200 > 0) or ema50 != ema50 or ema200 != ema200:
+        return {"bias": "neutral", "detail": "ข้อมูลเทรนด์ไม่พอ"}
+    if close > ema200 and ema50 >= ema200:
+        bias = "bullish"
+    elif close < ema200 and ema50 <= ema200:
+        bias = "bearish"
+    else:
+        bias = "neutral"
+    return {"bias": bias, "tf": tf, "detail": f"BTC {bias}"}
+
+
 async def daily_opportunities(items: list[dict], concurrency: int = 4) -> list[dict]:
     """Evaluate each watchlist item (symbol + assigned cfg) → ranked by score."""
     client = BitkubClient()
+    regime = await market_regime(client)          # market-wide bias, computed once
     sem = asyncio.Semaphore(concurrency)
 
     async def one(it: dict) -> dict | None:
         async with sem:
             try:
-                return await daily_opportunity(client, it["symbol"], it.get("cfg"))
+                return await daily_opportunity(client, it["symbol"], it.get("cfg"), regime=regime)
             except Exception:
                 # a single bad/illiquid symbol (esp. from market discovery) must
                 # not abort the whole scan
