@@ -61,6 +61,38 @@ def _models():
     return xgb, logit
 
 
+def ml_vote(candles: list[Candle], horizon: int = 8) -> float | None:
+    """P(up over next `horizon` bars) for the LATEST closed bar.
+
+    Trains the ensemble on all rows that have a (past) label, then predicts the
+    current bar. Returns a probability in [0,1], or None if there isn't enough
+    data / a dep fails. HEAVY (fits XGBoost) — call from a cached/background path,
+    never inline in the scan. This is a confirm/veto vote, not a standalone signal.
+    """
+    try:
+        df = indicator_frame(candles, closed_only=True).reset_index(drop=True)
+        feats = _features(df).replace([np.inf, -np.inf], np.nan)
+        label = _label(df, horizon, BacktestParams().fee)
+        train = feats.copy()
+        train["y"] = label
+        train = train.dropna()
+        if len(train) < 300:
+            return None
+        X = train[FEATURES].to_numpy()
+        y = train["y"].to_numpy()
+        latest = feats.dropna()
+        if latest.empty:
+            return None
+        x_pred = latest[FEATURES].to_numpy()[-1:].astype(float)
+        xgb, logit = _models()
+        xgb.fit(X, y)
+        logit.fit(X, y)
+        p = 0.5 * xgb.predict_proba(x_pred)[:, 1] + 0.5 * logit.predict_proba(x_pred)[:, 1]
+        return float(p[0])
+    except Exception:
+        return None
+
+
 def ml_report(candles: list[Candle], horizon: int = 8, n_splits: int = 3) -> dict:
     from sklearn.model_selection import TimeSeriesSplit
     from sklearn.metrics import accuracy_score, roc_auc_score

@@ -96,6 +96,30 @@ async def pipeline_tick() -> None:
             log.warning("desk_pipeline_ws_failed", workspace=str(ws), error=str(e))
 
 
+async def ml_vote_tick() -> None:
+    """Refresh the cached ML votes (P(up) per symbol) on a slow schedule.
+
+    Heavy (trains XGBoost per coin) but decoupled + single-flight locked, so the
+    scan only reads the cache. Opt-in via DESK_ML_VOTE_ENABLED."""
+    try:
+        ws_ids = await _workspaces_with_watchlist()
+    except Exception as e:
+        log.warning("desk_ml_list_failed", error=str(e))
+        return
+    for ws in ws_ids:
+        try:
+            async with AsyncSessionLocal() as db:
+                await asyncio.wait_for(
+                    desk_store.refresh_ml_votes(db, ws),
+                    timeout=settings.ML_VOTE_TICK_TIMEOUT_SECONDS,
+                )
+        except asyncio.TimeoutError:
+            log.warning("desk_ml_ws_timeout", workspace=str(ws),
+                        timeout=settings.ML_VOTE_TICK_TIMEOUT_SECONDS)
+        except Exception as e:
+            log.warning("desk_ml_ws_failed", workspace=str(ws), error=str(e))
+
+
 async def fast_tick() -> None:
     """Cheap price-only refresh of every workspace that already has a snapshot."""
     try:
@@ -125,6 +149,11 @@ def start_scheduler() -> None:
         _scheduler.add_job(pipeline_tick, "interval",
                            seconds=settings.DESK_GRAPH_INTERVAL_SECONDS,
                            id="desk_pipeline", max_instances=1, coalesce=True)
+    # opt-in ML vote refresh (heavy) — own slow schedule, single-flight locked
+    if settings.DESK_ML_VOTE_ENABLED:
+        _scheduler.add_job(ml_vote_tick, "interval",
+                           seconds=settings.ML_VOTE_INTERVAL_SECONDS,
+                           id="desk_ml_vote", max_instances=1, coalesce=True)
     _scheduler.start()
     log.info("trading.scheduler.started", heavy_seconds=HEAVY_SECONDS, fast_seconds=FAST_SECONDS,
              pipeline_auto=settings.DESK_GRAPH_AUTO,

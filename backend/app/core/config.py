@@ -50,6 +50,15 @@ class Settings(BaseSettings):
     DESK_GRAPH_INTERVAL_SECONDS: int = 300          # how often the auto pipeline runs
     PIPELINE_TICK_TIMEOUT_SECONDS: float = 200.0    # watchdog for one pipeline run
     PIPELINE_LOCK_TTL_SECONDS: int = 240            # single-flight lock auto-release
+    # ML vote (XGBoost+Logistic ensemble): an extra confirm/veto on the rule signal.
+    # OFF by default — it's heavy (trains per coin), so a background job refreshes a
+    # cached P(up) per symbol and the scan only reads the cache (never trains inline).
+    DESK_ML_VOTE_ENABLED: bool = False
+    ML_VOTE_INTERVAL_SECONDS: int = 1800            # how often the ML refresh job runs
+    ML_VOTE_TICK_TIMEOUT_SECONDS: float = 600.0     # watchdog for one ML refresh
+    ML_VOTE_TTL_SECONDS: int = 7200                 # cached vote freshness
+    ML_VOTE_LOCK_TTL_SECONDS: int = 660             # single-flight lock auto-release
+    ML_VOTE_MIN_PROB: float = 0.5                   # below = ML does not confirm
     # run the desk worker (APScheduler) inside the API process. Set False when
     # running a dedicated worker (`python -m app.trading.worker`) so the ticks
     # don't run twice.

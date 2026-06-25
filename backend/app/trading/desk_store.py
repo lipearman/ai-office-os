@@ -31,6 +31,9 @@ DESK_CHANNEL = "desk-updates"
 PIPELINE_RUN_KEY = "pipeline_run:{workspace_id}"
 PIPELINE_TTL = 600
 
+# Redis key for a cached ML vote P(up) per symbol (refreshed by a background job).
+ML_VOTE_KEY = "desk:mlvote:{symbol}"
+
 _PIPELINE_NODE_DEFS = {
     "monitor": {"id": "monitor", "name": "Model Monitor",     "emoji": "📉", "role": "advisory", "description": "Scan หา 10 เหรียญที่ดีที่สุดของวันนี้"},
     "analyst": {"id": "analyst", "name": "Market Analyst",    "emoji": "📊", "role": "advisory", "description": "วิเคราะห์ภาพรวมตลาดและแนวโน้ม"},
@@ -145,6 +148,7 @@ from app.trading import desk_llm
 from app.trading import auto_trader
 from app.trading.graph import get_graph
 from app.trading.state import DeskState
+from app.trading.ml import ml_vote
 from app.core.config import settings
 
 
@@ -307,7 +311,9 @@ async def compute_full(db: AsyncSession, workspace_id, force_graph: bool = False
     """
     # watchlist (pinned) + market-scan discoveries (top-N by volume)
     items = await watchlist_plus_discovered(db, workspace_id)
-    opps = await daily_opportunities(items) if items else []
+    ml_votes = (await get_ml_votes([it["symbol"] for it in items])
+                if (items and settings.DESK_ML_VOTE_ENABLED) else {})
+    opps = await daily_opportunities(items, ml_votes=ml_votes) if items else []
     prices = await _live_prices(items)
     positions = await _positions(db, workspace_id, prices)
     stats = await _stats(db, workspace_id)
@@ -538,7 +544,9 @@ async def run_pipeline_only(db: AsyncSession, workspace_id) -> str:
 
     try:
         items = await watchlist_plus_discovered(db, workspace_id)
-        opps = await daily_opportunities(items) if items else []
+        ml_votes = (await get_ml_votes([it["symbol"] for it in items])
+                    if (items and settings.DESK_ML_VOTE_ENABLED) else {})
+        opps = await daily_opportunities(items, ml_votes=ml_votes) if items else []
         if not opps:
             return "no_opps"
         prices = await _live_prices(items)
@@ -602,6 +610,69 @@ async def run_pipeline_only(db: AsyncSession, workspace_id) -> str:
                 await r.delete(lock_key)
             except Exception:
                 pass
+
+
+async def refresh_ml_votes(db: AsyncSession, workspace_id) -> int:
+    """Background: train the ML ensemble per candidate symbol and cache P(up).
+
+    Heavy (XGBoost per coin) — runs on its own slow schedule with a single-flight
+    lock; the scan only READS these cached votes (never trains inline). Returns
+    how many votes were refreshed. Best-effort.
+    """
+    lock_key = f"desk:mlvote:lock:{workspace_id}"
+    r = None
+    try:
+        r = await get_redis()
+        if not await r.set(lock_key, "1", nx=True, ex=settings.ML_VOTE_LOCK_TTL_SECONDS):
+            return 0
+    except Exception:
+        r = None
+    try:
+        items = await watchlist_plus_discovered(db, workspace_id)
+        if not items:
+            return 0
+        client = BitkubClient()
+        rr = r or await get_redis()
+        done = 0
+        for it in items:
+            sym = it["symbol"]
+            tf = (it.get("cfg") or {}).get("timeframe") or "1H"
+            try:
+                candles = await client.fetch_ohlcv(sym, tf, limit=1500)
+                prob = ml_vote(candles)
+                if prob is not None:
+                    await rr.setex(ML_VOTE_KEY.format(symbol=sym),
+                                   settings.ML_VOTE_TTL_SECONDS, str(round(prob, 4)))
+                    done += 1
+            except Exception:
+                continue
+        log.info("desk_ml_votes_refreshed", workspace=str(workspace_id), count=done)
+        return done
+    finally:
+        if r is not None:
+            try:
+                await r.delete(lock_key)
+            except Exception:
+                pass
+
+
+async def get_ml_votes(symbols: list[str]) -> dict[str, float]:
+    """Read cached ML votes {symbol: P(up)} for the given symbols (best-effort)."""
+    if not symbols:
+        return {}
+    try:
+        r = await get_redis()
+    except Exception:
+        return {}
+    out: dict[str, float] = {}
+    for s in symbols:
+        try:
+            v = await r.get(ML_VOTE_KEY.format(symbol=s))
+            if v is not None:
+                out[s] = float(v)
+        except Exception:
+            continue
+    return out
 
 
 async def refresh_prices(db: AsyncSession, workspace_id) -> DeskSnapshot | None:

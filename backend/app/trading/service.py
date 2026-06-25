@@ -15,6 +15,7 @@ from app.trading.backtest import (
 from app.trading.indicators import indicator_frame
 from app.trading.optimizer import optimize
 from app.trading.ml import ml_report
+from app.core.config import settings
 
 
 async def analyze_symbol(client: BitkubClient, symbol: str) -> MTFSnapshot | None:
@@ -109,7 +110,7 @@ async def ml_symbol(
 
 async def daily_opportunity(
     client: BitkubClient, symbol: str, cfg: dict | None = None, default_tf: str = "1H",
-    regime: dict | None = None,
+    regime: dict | None = None, ml_prob: float | None = None,
 ) -> dict | None:
     """Estimate today's winning chance for a symbol.
 
@@ -217,6 +218,16 @@ async def daily_opportunity(
     elif signal_today and bias == "bullish":
         reasons.append("ตลาดรวมขาขึ้น (BTC) หนุนฝั่ง long")
 
+    # ML vote (cached, opt-in): confirm/veto the rule signal — advisory only,
+    # never a hard block (the model is a 'human gate' helper, not a trader).
+    if ml_prob is not None and signal_today:
+        if ml_prob < settings.ML_VOTE_MIN_PROB:
+            score = round(score * 0.7, 1)
+            reasons.append(f"⚠️ ML ไม่ยืนยัน (P_up {ml_prob:.0%})")
+        else:
+            score = round(score * 1.1, 1)
+            reasons.append(f"✅ ML ยืนยันสัญญาณ (P_up {ml_prob:.0%})")
+
     return {
         "symbol": tv,
         "timeframe": tf,
@@ -224,6 +235,7 @@ async def daily_opportunity(
         "assigned": cfg is not None,
         "signal_today": signal_today,
         "market_bias": bias,
+        "ml_prob": round(ml_prob, 3) if ml_prob is not None else None,
         "win_chance_pct": win_chance,
         "opportunity_score": score,
         "label": label,
@@ -264,16 +276,22 @@ async def market_regime(client: BitkubClient, symbol: str = "BTC_THB", tf: str =
     return {"bias": bias, "tf": tf, "detail": f"BTC {bias}"}
 
 
-async def daily_opportunities(items: list[dict], concurrency: int = 4) -> list[dict]:
-    """Evaluate each watchlist item (symbol + assigned cfg) → ranked by score."""
+async def daily_opportunities(items: list[dict], concurrency: int = 4,
+                              ml_votes: dict | None = None) -> list[dict]:
+    """Evaluate each watchlist item (symbol + assigned cfg) → ranked by score.
+
+    `ml_votes` = {symbol: P(up)} cached by the background ML job; passed through
+    so the rule signal gets an ML confirm/veto without training inline."""
     client = BitkubClient()
     regime = await market_regime(client)          # market-wide bias, computed once
+    votes = ml_votes or {}
     sem = asyncio.Semaphore(concurrency)
 
     async def one(it: dict) -> dict | None:
         async with sem:
             try:
-                return await daily_opportunity(client, it["symbol"], it.get("cfg"), regime=regime)
+                return await daily_opportunity(client, it["symbol"], it.get("cfg"),
+                                               regime=regime, ml_prob=votes.get(it["symbol"]))
             except Exception:
                 # a single bad/illiquid symbol (esp. from market discovery) must
                 # not abort the whole scan
