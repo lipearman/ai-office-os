@@ -54,6 +54,14 @@ async def auto_open(db: AsyncSession, workspace_id, opps: list[dict], prices: di
             min_win += 15
         if (o.get("win_chance_pct") or 0) < min_win:
             continue
+        # ML ensemble gate: when ML is on, only open if the model confirms (P_up
+        # >= threshold). The walk-forward test showed the rule+ML ensemble flips a
+        # losing rule into positive OOS expectancy by skipping low-conviction trades.
+        # No cached vote yet → don't block (degrade gracefully).
+        if settings.DESK_ML_VOTE_ENABLED:
+            mp = o.get("ml_prob")
+            if mp is not None and mp < settings.ML_VOTE_MIN_PROB:
+                continue
         sym = o["symbol"]
         if sym in open_syms:
             continue

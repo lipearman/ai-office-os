@@ -121,7 +121,10 @@ async def daily_opportunity(
     """
     tv = to_tradingview_symbol(symbol)
     tf = (cfg or {}).get("timeframe") or default_tf
-    params = BacktestParams(**cfg["params"]) if cfg and cfg.get("params") else BacktestParams()
+    # default to the VALIDATED strategy (filters fake signals: volume/ema-stack/
+    # macd>0/not-overextended/cooldown). The walk-forward analysis showed the
+    # validated + ML-gated ensemble is the only config with positive OOS edge.
+    params = BacktestParams(**cfg["params"]) if cfg and cfg.get("params") else BacktestParams(use_validator=True)
     strategy = params.strategy
 
     try:
