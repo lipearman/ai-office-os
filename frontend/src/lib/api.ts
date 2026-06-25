@@ -29,6 +29,16 @@ api.interceptors.response.use(
           });
           localStorage.setItem("access_token", data.access_token);
           localStorage.setItem("refresh_token", data.refresh_token);
+          // also sync the auth store so subscribers (e.g. the WebSocket manager,
+          // which connects with the store's token) reconnect with the fresh token.
+          // dynamic import avoids a circular dependency (auth store imports api).
+          try {
+            const { useAuthStore } = await import("@/store/auth");
+            useAuthStore.setState({
+              access_token: data.access_token,
+              refresh_token: data.refresh_token,
+            });
+          } catch { /* noop */ }
           err.config.headers.Authorization = `Bearer ${data.access_token}`;
           return api.request(err.config);
         } catch {
