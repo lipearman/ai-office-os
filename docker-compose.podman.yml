@@ -63,10 +63,11 @@ services:
       # 300s = every 5 min; set 180 for every 3 min.
       DESK_GRAPH_AUTO: "true"
       DESK_GRAPH_INTERVAL_SECONDS: "300"
-      # ML vote (XGBoost ensemble) as a confirm/veto on the rule signal. OFF by
-      # default (heavy). When "true", a background job (every 30 min) trains per
-      # coin + caches P(up); the scan reads the cache and nudges the score.
-      DESK_ML_VOTE_ENABLED: "false"
+      # ML vote (XGBoost ensemble) as a confirm/veto on the rule signal. A
+      # background job (every 30 min) trains per coin + caches P(up); the scan
+      # reads the cache and nudges the score (confirm x1.1 / veto x0.7). Heavy —
+      # set "false" to disable.
+      DESK_ML_VOTE_ENABLED: "true"
       # desk market discovery — scan top-N THB pairs by volume on top of watchlist
       DESK_SCAN_ENABLED: "true"
       DESK_SCAN_TOP_N: "20"
