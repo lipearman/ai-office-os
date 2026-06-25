@@ -35,6 +35,14 @@ class Settings(BaseSettings):
     # kill-switch for LLM 'color commentary' on the trading desk (worker calls
     # the LLM on each heavy tick when a provider is configured)
     DESK_LLM_ENABLED: bool = True
+    # The heavy per-coin LangGraph pipeline (news/trader/coach × N coins ≈ 30+ LLM
+    # calls) is opt-in: it's slow on a shared Ollama and emits a coin-centric
+    # character set. When OFF, the desk uses deterministic build_desk (the proper
+    # 7-role desk) + the light enrich_commentary layer (~1 call) for AI flavor.
+    DESK_GRAPH_ENABLED: bool = False
+    # max coins the per-coin LLM agents (news/trader/coach) analyze per heavy tick.
+    # Each coin ≈ 3 LLM calls; keep small so the tick finishes within the budget.
+    DESK_LLM_MAX_COINS: int = 3
     # run the desk worker (APScheduler) inside the API process. Set False when
     # running a dedicated worker (`python -m app.trading.worker`) so the ticks
     # don't run twice.

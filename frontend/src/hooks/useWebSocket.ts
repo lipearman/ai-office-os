@@ -45,7 +45,13 @@ class WSManager {
     if (this._alive()) return;
     if (this._timer) { clearTimeout(this._timer); this._timer = null; }
 
-    const url = `${process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:8000"}/ws/${this._wsId}?token=${this._token}`;
+    // default to same-origin (wss?://<current host>) so WS works behind a tunnel
+    // via the Next /ws rewrite; override with NEXT_PUBLIC_WS_URL if set.
+    const wsBase = process.env.NEXT_PUBLIC_WS_URL
+      || (typeof window !== "undefined"
+            ? `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}`
+            : "ws://localhost:8000");
+    const url = `${wsBase}/ws/${this._wsId}?token=${this._token}`;
     const ws = new WebSocket(url);
     this._ws = ws;
 

@@ -19,7 +19,7 @@ export interface OfficeTemplate {
   created_at: string;
 }
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "";  // "" = same-origin (Next /static rewrite → backend)
 
 /** Backend uploads return relative `/static/...` URLs served from the API host. */
 export function resolveAssetUrl(url: string | null): string | null {

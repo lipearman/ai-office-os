@@ -148,6 +148,12 @@ from app.trading.state import DeskState
 from app.core.config import settings
 
 
+async def _empty_aiter():
+    """Async iterator that yields nothing — used to skip the graph stream."""
+    return
+    yield  # pragma: no cover — makes this an async generator
+
+
 def _seed() -> int:
     """Minute-rotation seed so advisory lines vary over time."""
     return int(datetime.now(timezone.utc).timestamp() // 60)
@@ -319,7 +325,9 @@ async def compute_full(db: AsyncSession, workspace_id) -> DeskSnapshot:
 
     snap = await get_snapshot(db, workspace_id)
 
-    # ── LangGraph multi-agent pipeline (streamed step-by-step) ──
+    # ── LangGraph multi-agent pipeline (streamed step-by-step) — opt-in ──
+    # When DESK_GRAPH_ENABLED is off, the stream is skipped and `characters`
+    # stays the deterministic desk; enrich_commentary (below) adds AI flavor.
     graph = get_graph()
     state: DeskState = {
         "workspace_id": str(workspace_id),
@@ -358,7 +366,8 @@ async def compute_full(db: AsyncSession, workspace_id) -> DeskSnapshot:
     graph_commentary: dict = {}
     characters = det_chars
     try:
-        async for step_data in graph.astream(state):
+        stream = graph.astream(state) if settings.DESK_GRAPH_ENABLED else _empty_aiter()
+        async for step_data in stream:
             for node_id, output in step_data.items():
                 if node_id == "__end__":
                     continue

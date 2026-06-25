@@ -10,6 +10,8 @@ log = structlog.get_logger()
 
 
 def _llm_available() -> bool:
+    if not settings.DESK_LLM_ENABLED:
+        return False
     try:
         return not isinstance(get_llm(), _FallbackLLM)
     except Exception:
@@ -17,6 +19,10 @@ def _llm_available() -> bool:
 
 
 async def _llm_call(system: str, user: str, provider: str = "auto", model: str = "auto", temperature: float | None = None) -> str | None:
+    # honor the kill-switch — when desk LLM is off, skip the (possibly slow)
+    # network call entirely so the heavy tick stays fast and never times out.
+    if not settings.DESK_LLM_ENABLED:
+        return None
     try:
         llm = get_llm(provider, model, temperature if temperature is not None else 0.3)
         if isinstance(llm, _FallbackLLM):
@@ -194,7 +200,11 @@ async def node_monitor(state: DeskState) -> dict:
         return {"ranked_coins": [], "coin_index": 0, "coin_results": [], "model_verdict": "ไม่มีโอกาสเทรดวันนี้"}
 
     prices = state.get("prices") or {}
-    top_10 = opps[:10]
+    # Cap how many coins the per-coin agents (news/trader/coach) analyze with the
+    # LLM — each coin = 3 LLM calls, so the heavy tick budget (150s) is what limits
+    # this, not the model. Tune via DESK_LLM_MAX_COINS.
+    max_coins = max(1, settings.DESK_LLM_MAX_COINS)
+    top_n = opps[:max_coins]
     acfg = (state.get("agent_configs") or {}).get("monitor") or {}
 
     user = json.dumps({
@@ -205,7 +215,7 @@ async def node_monitor(state: DeskState) -> dict:
             "win_chance_pct": o.get("win_chance_pct"),
             "opportunity_score": o.get("opportunity_score"),
             "timeframe": o.get("timeframe", "1H"),
-        } for o in top_10],
+        } for o in top_n],
     }, ensure_ascii=False, default=str)
 
     prompt = acfg.get("system_prompt") or _PROMPT_MONITOR
@@ -215,8 +225,8 @@ async def node_monitor(state: DeskState) -> dict:
         top_list = data.get("top_coins", [])
         summary = data.get("summary", "")
     else:
-        top_list = [{"symbol": o["symbol"], "reason": "", "timeframe": o.get("timeframe", "1H")} for o in top_10]
-        summary = f"พบ {len(top_10)} เหรียญมีโอกาส วันนี้มีสัญญาณ {len([o for o in opps if o.get('signal_today')])} เหรียญ"
+        top_list = [{"symbol": o["symbol"], "reason": "", "timeframe": o.get("timeframe", "1H")} for o in top_n]
+        summary = f"พบ {len(top_n)} เหรียญมีโอกาส วันนี้มีสัญญาณ {len([o for o in opps if o.get('signal_today')])} เหรียญ"
 
     ranked_coins = []
     for item in top_list:
@@ -228,6 +238,8 @@ async def node_monitor(state: DeskState) -> dict:
             "reason": item.get("reason", ""),
             "timeframe": item.get("timeframe", opp.get("timeframe", "1H")),
         })
+    # hard cap regardless of what the LLM returned, so the per-coin loop stays in budget
+    ranked_coins = ranked_coins[:max_coins]
 
     return {
         "ranked_coins": ranked_coins,

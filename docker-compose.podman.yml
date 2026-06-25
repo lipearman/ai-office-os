@@ -51,15 +51,22 @@ services:
       OLLAMA_BASE_URL: http://llm-server:11434
       DEFAULT_LLM_PROVIDER: ollama
       DEFAULT_LLM_MODEL: qwen2.5:7b-instruct
+      # desk "color commentary" via the light enrich layer (~1 LLM call for all 7
+      # roles, ~9s) on top of the deterministic 7-role desk. Model: qwen2.5:7b-instruct
+      # (~5s/call, installed on llm-server). The heavy per-coin LangGraph pipeline is
+      # left OFF (DESK_GRAPH_ENABLED default false) — it's ~30+ calls / 127s on the
+      # shared Ollama and emits a coin-centric desk. Flip it on only if you want the
+      # step-by-step Pipeline feed and can spare the budget.
+      DESK_LLM_ENABLED: "true"
       # desk market discovery — scan top-N THB pairs by volume on top of watchlist
       DESK_SCAN_ENABLED: "true"
       DESK_SCAN_TOP_N: "20"
       # auto paper-trading — worker opens/closes simulated trades on its own
-      # (strict: only on a fresh same-day signal with win >= 55%)
+      # (opens on a fresh same-day signal with win >= 30%)
       AUTO_PAPER_ENABLED: "true"
       AUTO_PAPER_MAX_POSITIONS: "5"
       AUTO_PAPER_SIZE_THB: "1000"
-      AUTO_PAPER_MIN_WIN_PCT: "55"
+      AUTO_PAPER_MIN_WIN_PCT: "30"
       AUTO_PAPER_REQUIRE_SIGNAL: "true"
     ports:
       - "9003:8000"
@@ -84,9 +91,11 @@ services:
       dockerfile: Dockerfile
     container_name: aioffice_frontend
     environment:
-      # browser-facing URLs → the published backend port on the host
-      NEXT_PUBLIC_API_URL: http://localhost:9003
-      NEXT_PUBLIC_WS_URL: ws://localhost:9003
+      # same-origin: browser calls the frontend; Next proxies /api,/ws,/static to
+      # the backend (works on localhost AND behind a single Cloudflare tunnel)
+      NEXT_PUBLIC_API_URL: ""
+      NEXT_PUBLIC_WS_URL: ""
+      BACKEND_ORIGIN: http://backend:8000
     ports:
       - "9002:3000"
     depends_on:

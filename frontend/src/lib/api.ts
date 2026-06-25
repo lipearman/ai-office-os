@@ -1,6 +1,8 @@
 import axios from "axios";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+// "" = same-origin (relative) → goes through the Next /api rewrite to the backend.
+// Works on localhost and behind a single public tunnel without CORS/mixed-content.
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "";
 
 export const api = axios.create({
   baseURL: `${API_URL}/api/v1`,
