@@ -78,6 +78,9 @@ class Settings(BaseSettings):
     AUTO_PAPER_MAX_POSITIONS: int = 5
     AUTO_PAPER_SIZE_THB: float = 1000.0
     AUTO_PAPER_MIN_WIN_PCT: float = 55.0
+    # catastrophe stop: auto-close ANY open paper position down more than this %,
+    # even one without a stop/target (so a position can never bleed indefinitely).
+    AUTO_PAPER_MAX_LOSS_PCT: float = 8.0
     # require a fresh entry signal (signal_today) to auto-open. False = open the
     # top-ranked opportunities by score even without a same-day signal (more
     # aggressive; useful for demos / always-in strategies).

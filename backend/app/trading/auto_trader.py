@@ -113,6 +113,10 @@ async def auto_close(db: AsyncSession, workspace_id, prices: dict | None = None)
             reason = "stop"
         elif t.target and cur >= t.target:
             reason = "target"
+        # catastrophe stop — closes a position bleeding past the max loss even if
+        # it has no stop/target (no orphan can fall forever).
+        elif t.entry_price and (cur / t.entry_price - 1.0) * 100 <= -settings.AUTO_PAPER_MAX_LOSS_PCT:
+            reason = "max_loss"
         if not reason:
             continue
         pnl = close_pnl(t.entry_price, cur, t.size_thb, t.qty)
