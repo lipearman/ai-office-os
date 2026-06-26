@@ -17,6 +17,7 @@ from app.schemas.trading import (
 from app.trading.paper import fill_open, close_pnl, unrealized, paper_stats
 from app.trading.news import fetch_news, aggregate_sentiment
 from app.trading import desk_store
+from app.core.config import settings
 from datetime import datetime, timezone
 from app.api.deps import get_current_user
 from app.trading.bitkub import BitkubClient, to_tradingview_symbol, TIMEFRAMES
@@ -272,17 +273,27 @@ async def trading_desk(
     if snap is None:
         return {"characters": [], "status": "warming_up", "computed_at": None}
     meta = snap.meta or {}
+    opps = meta.get("opps", [])
     # always return a fresh live ticker (with sparkline closes) regardless of snapshot age
     items = await desk_store._watchlist_items(db, workspace_id)
     if not items:
         # fallback: extract symbols from meta.opps
-        opps = meta.get("opps", [])
         items = [{"symbol": o["symbol"]} for o in opps if o.get("symbol")]
     live_ticker = await desk_store._live_ticker(items)
+    # "watch" = coins the ML model likes (P_up high) that have no entry signal yet
+    floor = settings.ML_VOTE_MIN_PROB
+    watch = sorted(
+        ({"symbol": o.get("symbol"), "ml_prob": o.get("ml_prob"),
+          "win_chance_pct": o.get("win_chance_pct"), "price": o.get("price"),
+          "label": o.get("label"), "market_bias": o.get("market_bias")}
+         for o in opps if not o.get("signal_today") and (o.get("ml_prob") or 0) >= floor),
+        key=lambda x: -(x["ml_prob"] or 0),
+    )[:6]
     return {
         "characters": snap.characters or [],
         "ticker": live_ticker or meta.get("ticker", {}),
         "news_agg": meta.get("news_agg", {}),
+        "watch": watch,
         "status": "ready",
         "computed_at": snap.computed_at.isoformat() if snap.computed_at else None,
     }

@@ -126,6 +126,8 @@ export default function TradingOffice({ officeName }: Props) {
   const [showNews, setShowNews] = useState(false);
   const [showChat, setShowChat] = useState(false);
   const [showPaper, setShowPaper] = useState(true);
+  const [showWatch, setShowWatch] = useState(false);
+  const [watch, setWatch] = useState<{ symbol: string; ml_prob?: number | null; win_chance_pct?: number | null; price?: number | null; label?: string; market_bias?: string }[]>([]);
   const [paperStats, setPaperStats] = useState<{ total_trades?: number; win_rate?: number; profit_factor?: number | null; total_pnl_thb?: number } | null>(null);
   const [paperPositions, setPaperPositions] = useState<{ id: string; symbol: string; strategy?: string; entry_price?: number; live?: { pnl_thb: number; pnl_pct: number } | null }[]>([]);
   const pipelineRunRef = useRef<string>("idle");
@@ -185,6 +187,7 @@ export default function TradingOffice({ officeName }: Props) {
       const t = r.data.ticker ?? {};
       if (Object.keys(t).length > 0) setTickerMap(t);
       if (r.data.news_agg) setNewsAgg(r.data.news_agg);
+      setWatch(r.data.watch ?? []);
       setUpdated(new Date());
       setError(null);
       setWarming(r.data.status === "warming_up");
@@ -445,6 +448,10 @@ export default function TradingOffice({ officeName }: Props) {
               <button onClick={() => setShowPaper((s) => !s)}
                 className={`rounded-md border px-2 py-1 text-[10px] ${showPaper ? "border-accent-400 text-accent-300" : "border-white/15 text-white/70"} hover:bg-white/10`}>
                 {showPaper ? "⊟ Paper" : "⊞ Paper"}
+              </button>
+              <button onClick={() => setShowWatch((s) => !s)}
+                className={`rounded-md border px-2 py-1 text-[10px] ${showWatch ? "border-accent-400 text-accent-300" : "border-white/15 text-white/70"} hover:bg-white/10`}>
+                {showWatch ? "⊟ Watch" : "⊞ Watch"}
               </button>
               <button onClick={load} className="rounded-md border border-white/15 px-2 py-1 text-white/70 hover:bg-white/10">รีเฟรช</button>
               <button onClick={enterEdit} className="flex items-center gap-1 rounded-md bg-primary-500 px-3 py-1 font-semibold text-white hover:bg-primary-600">
@@ -730,6 +737,42 @@ export default function TradingOffice({ officeName }: Props) {
               </div>
               <div className="border-t border-white/10 px-3 py-1 text-[8px] text-white/25">
                 🤖 = auto · live ทุก {POLL_MS / 1000}s
+              </div>
+            </div>
+          </DraggableBox>
+        )}
+
+        {/* "watch" floating box — ML likes it, no entry signal yet */}
+        {!editMode && showWatch && (
+          <DraggableBox title="👀 น่าจับตา (ML)" defaultPos={{ x: 340, y: 300 }} storageKey="office-watch-box">
+            <div className="w-[280px] max-w-[calc(100vw-0.75rem)]">
+              <div className="grid grid-cols-[1fr_auto_auto] gap-x-2 px-3 py-1.5 text-[9px] font-semibold text-white/40 border-b border-white/10">
+                <span>Symbol</span>
+                <span className="text-right">ML P↑</span>
+                <span className="text-right w-16">ราคา</span>
+              </div>
+              <div className="px-3 py-1 space-y-0.5 max-h-[260px] overflow-y-auto">
+                {watch.length === 0 && (
+                  <p className="py-2 text-center text-[10px] text-white/30">ยังไม่มีเหรียญที่โมเดลเชื่อมั่น</p>
+                )}
+                {watch.map((w) => {
+                  const p = w.ml_prob ?? 0;
+                  const strong = p >= 0.6;
+                  return (
+                    <div key={w.symbol} className="grid grid-cols-[1fr_auto_auto] items-center gap-x-2 text-[11px]" title={w.label ?? ""}>
+                      <span className="truncate font-semibold text-white/90">{w.symbol.replace("_THB", "")}</span>
+                      <span className={`text-right font-mono font-semibold ${strong ? "text-emerald-400" : "text-accent-300"}`}>
+                        {Math.round(p * 100)}%
+                      </span>
+                      <span className="w-16 text-right font-mono text-white/50">
+                        {w.price != null ? (w.price >= 1000 ? (w.price / 1000).toFixed(1) + "K" : w.price.toLocaleString(undefined, { maximumFractionDigits: 2 })) : "—"}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="border-t border-white/10 px-3 py-1 text-[8px] text-white/25">
+                โมเดลมองว่ามีโอกาสขึ้น · รอจังหวะ setup (ยังไม่มีสัญญาณเข้า)
               </div>
             </div>
           </DraggableBox>
