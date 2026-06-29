@@ -294,8 +294,50 @@ async def trading_desk(
         "ticker": live_ticker or meta.get("ticker", {}),
         "news_agg": meta.get("news_agg", {}),
         "watch": watch,
+        "game_summary": _game_summary(opps, floor),
         "status": "ready",
         "computed_at": snap.computed_at.isoformat() if snap.computed_at else None,
+    }
+
+
+def _game_summary(opps: list[dict], floor: float) -> dict:
+    """One-glance "state of the game" from the worker's scanned opportunities.
+
+    Surfaces what both engines see right now: the BTC regime (shared market bias),
+    how many coins fired an entry signal, the ML model's top P(up) picks (even when
+    all sit below the confirm floor — that itself is the signal in a weak market),
+    the single best-structured coin by opportunity_score, and a wait/go verdict.
+    """
+    regime = "neutral"
+    for o in opps:
+        if o.get("market_bias"):
+            regime = o["market_bias"]
+            break
+    signals = [o for o in opps if o.get("signal_today")]
+    top_ml = sorted(
+        ({"symbol": o.get("symbol"), "ml_prob": o.get("ml_prob")}
+         for o in opps if o.get("ml_prob") is not None),
+        key=lambda x: -(x["ml_prob"] or 0),
+    )[:3]
+    pick = max(opps, key=lambda o: (o.get("opportunity_score") or 0), default=None)
+    top_pick = None
+    if pick and pick.get("symbol"):
+        top_pick = {
+            "symbol": pick.get("symbol"),
+            "opportunity_score": pick.get("opportunity_score"),
+            "ml_prob": pick.get("ml_prob"),
+            "signal_today": bool(pick.get("signal_today")),
+        }
+    # "go" only when a coin both fired a signal AND the ML model confirms it
+    go = any((o.get("ml_prob") or 0) >= floor for o in signals)
+    return {
+        "regime": regime,
+        "scanned": len(opps),
+        "signals_today": len(signals),
+        "top_ml": top_ml,
+        "top_pick": top_pick,
+        "ml_floor": floor,
+        "verdict": "go" if go else "wait",
     }
 
 

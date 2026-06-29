@@ -70,6 +70,9 @@ export default function TradingPage() {
   const [mlResult, setMlResult]   = useState<any>(null);
   const [mlLoading, setMlLoading] = useState(false);
 
+  // ── game summary (regime + signals + ML view, worker-computed) ──
+  const [game, setGame]           = useState<any>(null);
+
   // ── today's opportunities ──
   const [opps, setOpps]           = useState<any[]>([]);
   const [oppsLoading, setOppsLoading] = useState(false);
@@ -258,6 +261,22 @@ export default function TradingPage() {
     } catch { /* ignore */ }
   };
   useEffect(() => { loadPaper(); /* eslint-disable-next-line */ }, [current]);
+
+  // game summary — read the worker's latest snapshot (regime + signals + ML view)
+  const loadGame = async () => {
+    if (!current) return;
+    try {
+      const r = await api.get(`/trading/desk/workspace/${current.id}`);
+      setGame(r.data.game_summary ?? null);
+    } catch { /* ignore */ }
+  };
+  useEffect(() => {
+    if (!current) return;
+    loadGame();
+    const t = setInterval(loadGame, 60_000);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [current]);
 
   const openPaper = async (o: any) => {
     if (!current) return;
@@ -454,6 +473,90 @@ export default function TradingPage() {
           {scanning ? "กำลังสแกน…" : "สแกนสัญญาณ"}
         </button>
       </div>
+
+      {/* ── สรุปเกมตอนนี้ (worker-computed: regime + signals + ML) ── */}
+      {game && (() => {
+        const reg = game.regime as string;
+        const regMap: Record<string, { txt: string; fg: string; bg: string }> = {
+          bullish: { txt: "🐂 ขาขึ้น", fg: "#4ade80", bg: "rgba(34,197,94,0.12)" },
+          bearish: { txt: "🐻 ขาลง",  fg: "#f87171", bg: "rgba(239,68,68,0.12)" },
+          neutral: { txt: "⚖️ กลาง",  fg: "#94a3b8", bg: "rgba(148,163,184,0.12)" },
+        };
+        const r = regMap[reg] ?? regMap.neutral;
+        const go = game.verdict === "go";
+        const floorPct = Math.round((game.ml_floor ?? 0.5) * 100);
+        const pct = (p: any) => (p == null ? "—" : `${Math.round(p * 100)}%`);
+        return (
+          <div className="mb-5 rounded-xl border border-white/10 bg-[#141228]/70 p-4 backdrop-blur-md">
+            <div className="mb-3 flex items-center gap-2">
+              <span className="text-sm font-semibold text-white/80">🎮 สรุปเกมตอนนี้</span>
+              <span className="rounded-md px-2 py-0.5 text-xs font-bold" style={{ color: r.fg, background: r.bg }}>
+                {r.txt}
+              </span>
+              <div className="flex-1" />
+              <span className="text-[10px] text-white/30">เหรียญที่สแกน {game.scanned} · สัญญาณวันนี้ {game.signals_today}</span>
+            </div>
+
+            {/* verdict banner */}
+            <div className="mb-3 rounded-lg px-3 py-2 text-sm font-semibold"
+              style={{ color: go ? "#4ade80" : "#fbbf24", background: go ? "rgba(34,197,94,0.1)" : "rgba(251,191,36,0.1)" }}>
+              {go
+                ? "🟢 มีจังหวะ! มีเหรียญเข้า setup และ ML ยืนยัน (≥ " + floorPct + "%) — ดูรายการ ⭐ โอกาสวันนี้ ด้านล่าง"
+                : "🟡 รอจังหวะ — ทั้งกฎเทคนิคและ ML ยังไม่เห็นโอกาสชนะ การไม่เข้า = รักษาแต้มในตลาดนี้"}
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-2">
+              {/* top ML picks */}
+              <div className="rounded-lg border border-white/10 bg-black/20 p-3">
+                <p className="mb-2 text-[11px] font-semibold text-white/50">
+                  🤖 ML มองโอกาสขึ้นสูงสุด <span className="text-white/30">(เกณฑ์ยืนยัน {floorPct}%)</span>
+                </p>
+                {game.top_ml?.length > 0 ? (
+                  <div className="space-y-1.5">
+                    {game.top_ml.map((m: any) => {
+                      const p = m.ml_prob ?? 0;
+                      const ok = p >= (game.ml_floor ?? 0.5);
+                      return (
+                        <div key={m.symbol} className="flex items-center gap-2 text-[11px]">
+                          <span className="w-24 shrink-0 font-semibold text-white">{m.symbol}</span>
+                          <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-white/5">
+                            <div className="h-full rounded-full" style={{ width: `${p * 100}%`, background: ok ? "#4ade80" : "#f59e0b" }} />
+                          </div>
+                          <span className="w-10 shrink-0 text-right font-bold" style={{ color: ok ? "#4ade80" : "#fbbf24" }}>{pct(p)}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <p className="text-[11px] text-white/30">ML ยังไม่พร้อม (รอรอบ refresh)</p>
+                )}
+              </div>
+
+              {/* best-structured pick */}
+              <div className="rounded-lg border border-white/10 bg-black/20 p-3">
+                <p className="mb-2 text-[11px] font-semibold text-white/50">⭐ โครงสร้างพร้อมสุด (opportunity score)</p>
+                {game.top_pick ? (
+                  <div>
+                    <div className="flex items-baseline gap-2">
+                      <span className="text-lg font-bold text-white">{game.top_pick.symbol}</span>
+                      <span className="text-xs text-white/40">score {game.top_pick.opportunity_score}</span>
+                    </div>
+                    <p className="mt-1 text-[11px]" style={{ color: game.top_pick.signal_today ? "#4ade80" : "#94a3b8" }}>
+                      {game.top_pick.signal_today
+                        ? "✅ เข้า setup แล้ว"
+                        : "⏳ ใกล้ที่สุด — ยังรอราคาทริกเงื่อนไข"}
+                      {game.top_pick.ml_prob != null && ` · ML ${pct(game.top_pick.ml_prob)}`}
+                    </p>
+                  </div>
+                ) : (
+                  <p className="text-[11px] text-white/30">ยังไม่มีข้อมูล</p>
+                )}
+              </div>
+            </div>
+            <p className="mt-2 text-[10px] text-amber-300/50">🔒 บริบทช่วยตัดสินใจ ไม่ใช่คำแนะนำการลงทุน</p>
+          </div>
+        );
+      })()}
 
       {/* LangGraph pipeline visualization */}
       <div className="mb-5 rounded-xl border border-white/10 bg-[#141228]/70 px-4 py-3 backdrop-blur-md">
