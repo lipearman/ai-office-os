@@ -30,14 +30,26 @@ HEAVY_SECONDS = 180
 FAST_SECONDS = 20
 
 
-async def _workspaces_with_watchlist() -> list:
+async def _active_workspaces() -> list:
+    """Workspaces whose desk should be (re)computed each heavy/pipeline/ml tick.
+
+    A desk is driven by EITHER a watchlist OR the volume scan (DESK_SCAN_ENABLED) —
+    so an empty watchlist must NOT freeze the worker. We include any workspace that
+    already has a desk snapshot (the scan keeps it alive) on top of those with an
+    enabled watchlist. Without this, a scan-only workspace never reaches
+    compute_full() and its desk (and auto-pin/auto-paper) goes stale forever.
+    """
     async with AsyncSessionLocal() as db:
-        res = await db.execute(
+        wl = await db.execute(
             select(WatchlistItem.workspace_id)
             .where(WatchlistItem.enabled == True)  # noqa: E712
             .distinct()
         )
-        return [row[0] for row in res.all()]
+        ids = {row[0] for row in wl.all()}
+        if settings.DESK_SCAN_ENABLED:
+            snap = await db.execute(select(DeskSnapshot.workspace_id))
+            ids.update(row[0] for row in snap.all())
+        return list(ids)
 
 
 async def _workspaces_with_snapshot() -> list:
@@ -49,7 +61,7 @@ async def _workspaces_with_snapshot() -> list:
 async def heavy_tick() -> None:
     """Full recompute of every workspace's desk + alert detection."""
     try:
-        ws_ids = await _workspaces_with_watchlist()
+        ws_ids = await _active_workspaces()
     except Exception as e:
         log.warning("desk_heavy_list_failed", error=str(e))
         return
@@ -78,7 +90,7 @@ async def pipeline_tick() -> None:
     it won't overlap a manual "Run Pipeline" or a previous auto run. Long but async
     (LLM awaits), so the fast tick + API keep serving while it runs."""
     try:
-        ws_ids = await _workspaces_with_watchlist()
+        ws_ids = await _active_workspaces()
     except Exception as e:
         log.warning("desk_pipeline_list_failed", error=str(e))
         return
@@ -102,7 +114,7 @@ async def ml_vote_tick() -> None:
     Heavy (trains XGBoost per coin) but decoupled + single-flight locked, so the
     scan only reads the cache. Opt-in via DESK_ML_VOTE_ENABLED."""
     try:
-        ws_ids = await _workspaces_with_watchlist()
+        ws_ids = await _active_workspaces()
     except Exception as e:
         log.warning("desk_ml_list_failed", error=str(e))
         return
