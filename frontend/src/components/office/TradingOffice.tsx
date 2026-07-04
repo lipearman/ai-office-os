@@ -46,6 +46,11 @@ const POLL_MS = 15_000;  // refresh desk data (prices move → new things to say
 // desk chatter: a character repeats its (changed) desk line at most this often —
 // keeps the floor alive between pipeline runs without becoming a bubble storm
 const CHATTER_COOLDOWN_MS = 150_000;
+// idle chatter: when the floor has gone quiet, the least-recently-heard character
+// re-speaks its current line — the office always has a conversation going
+const IDLE_TICK_MS = 9_000;       // how often we consider waking someone up
+const IDLE_RESPEAK_MS = 60_000;   // a character repeats itself at most once a minute
+const IDLE_MAX_BUBBLES = 2;       // don't add idle chatter when the floor is busy
 
 type Phase = "stream" | "show" | "fade";
 type Bubble = { text: string; idx: number; phase: Phase; born: number };
@@ -355,6 +360,30 @@ export default function TradingOffice({ officeName }: Props) {
       }, i * STAGGER_MS)
     );
     return () => timers.forEach(clearTimeout);
+  }, [chars, pipelineReports, editMode]);
+
+  // idle chatter — the floor never goes fully silent: when few bubbles are up,
+  // wake the character who has been quiet the longest and let it re-speak its
+  // current line (round-robin via lastSpokenAt). Fresh lines/alerts still take
+  // priority through the effect above; this only fills the gaps between them.
+  useEffect(() => {
+    if (editMode) return;
+    const t = setInterval(() => {
+      setBubbles((prev) => {
+        if (Object.keys(prev).length >= IDLE_MAX_BUBBLES) return prev;
+        const now = Date.now();
+        const c = chars
+          .filter((x) => spokenText(x) && !prev[x.key])
+          .filter((x) => now - (lastSpokenAt.current[x.key] ?? 0) > IDLE_RESPEAK_MS)
+          .sort((a, b) => (lastSpokenAt.current[a.key] ?? 0) - (lastSpokenAt.current[b.key] ?? 0))[0];
+        if (!c) return prev;
+        lastSpoken.current[c.key] = spokenText(c);
+        lastSpokenAt.current[c.key] = now;
+        return { ...prev, [c.key]: { text: spokenText(c), idx: 0, phase: "stream", born: now } };
+      });
+    }, IDLE_TICK_MS);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chars, pipelineReports, editMode]);
 
   // streaming (typewriter)
