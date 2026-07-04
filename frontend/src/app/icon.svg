@@ -1,0 +1,25 @@
+<svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1e2a78"/>
+      <stop offset="0.5" stop-color="#0f5e6b"/>
+      <stop offset="1" stop-color="#0d3b2e"/>
+    </linearGradient>
+    <linearGradient id="line" x1="0" y1="1" x2="1" y2="0">
+      <stop offset="0" stop-color="#22d3ee"/>
+      <stop offset="1" stop-color="#ff2d75"/>
+    </linearGradient>
+  </defs>
+  <!-- rounded tile -->
+  <rect x="16" y="16" width="480" height="480" rx="108" fill="url(#bg)"/>
+  <rect x="16" y="16" width="480" height="480" rx="108" fill="none" stroke="#ffffff" stroke-opacity="0.08" stroke-width="6"/>
+  <!-- upward trend line (trading desk) -->
+  <polyline points="104,360 200,288 280,328 408,160"
+    fill="none" stroke="url(#line)" stroke-width="34"
+    stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- arrow head at the top-right -->
+  <path d="M344 160 L408 160 L408 224" fill="none" stroke="#ff2d75"
+    stroke-width="34" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- endpoint glow dot -->
+  <circle cx="104" cy="360" r="26" fill="#22d3ee"/>
+</svg>
