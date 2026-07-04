@@ -72,6 +72,12 @@ class Settings(BaseSettings):
     # of the watchlist, so movers surface automatically. 0 / False = watchlist only.
     DESK_SCAN_ENABLED: bool = True
     DESK_SCAN_TOP_N: int = 20
+    # delisting denylist: Bitkub's public ticker has NO delisting flag, and a coin
+    # flagged for delisting (DE) often shows a volume SPIKE as holders dump it — so
+    # volume-ranked discovery happily surfaces a coin you can't actually hold. Drop
+    # these from the scan by hand as Bitkub announces delistings. tradingview format
+    # (BASE_THB), case-insensitive.
+    DESK_SCAN_EXCLUDE_SYMBOLS: list[str] = ["SYND_THB"]
     # auto paper-trading: worker opens trades on fresh setups + closes on
     # stop/target. OFF by default (turning it on lets the worker trade on its own).
     AUTO_PAPER_ENABLED: bool = False

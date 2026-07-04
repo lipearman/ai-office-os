@@ -192,6 +192,8 @@ async def _discovered_symbols(limit: int) -> list[str]:
         if not isinstance(ticker, dict):
             return []
         stable = {"USDT", "USDC", "BUSD", "DAI", "TUSD", "FDUSD"}
+        # delisting denylist — a DE-flagged coin spikes on volume but can't be held
+        excluded = {s.strip().upper() for s in settings.DESK_SCAN_EXCLUDE_SYMBOLS}
         rows: list[tuple[str, float]] = []
         for mk, rec in ticker.items():
             if not isinstance(mk, str) or not mk.startswith("THB_") or not isinstance(rec, dict):
@@ -201,7 +203,8 @@ async def _discovered_symbols(limit: int) -> list[str]:
             except Exception:
                 continue
             # keep only proper BASE_THB pairs; skip stablecoins (no trading signal)
-            if not tv.endswith("_THB") or tv.split("_")[0] in stable:
+            # and any symbol on the delisting denylist
+            if not tv.endswith("_THB") or tv.split("_")[0] in stable or tv.upper() in excluded:
                 continue
             vol = rec.get("quoteVolume") or rec.get("baseVolume") or 0
             rows.append((tv, float(vol)))
