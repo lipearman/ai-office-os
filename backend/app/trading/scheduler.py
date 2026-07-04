@@ -132,6 +132,26 @@ async def ml_vote_tick() -> None:
             log.warning("desk_ml_ws_failed", workspace=str(ws), error=str(e))
 
 
+async def market_watch_tick() -> None:
+    """Daily: diff Bitkub's official market list — auto-denylist vanished coins."""
+    from app.trading import market_watch
+    try:
+        async with AsyncSessionLocal() as db:
+            await market_watch.sync_market_symbols(db)
+    except Exception as e:
+        log.warning("market_watch_tick_failed", error=str(e))
+
+
+async def health_tick() -> None:
+    """Every 30 min: surface silent failures (stale desk / empty ML cache) as alerts."""
+    from app.trading import market_watch
+    try:
+        async with AsyncSessionLocal() as db:
+            await market_watch.health_check(db)
+    except Exception as e:
+        log.warning("health_tick_failed", error=str(e))
+
+
 async def fast_tick() -> None:
     """Cheap price-only refresh of every workspace that already has a snapshot."""
     try:
@@ -166,6 +186,16 @@ def start_scheduler() -> None:
         _scheduler.add_job(ml_vote_tick, "interval",
                            seconds=settings.ML_VOTE_INTERVAL_SECONDS,
                            id="desk_ml_vote", max_instances=1, coalesce=True)
+    # market watcher: symbols diff (daily, runs once at boot to baseline) +
+    # health checks — the maintenance a human used to do by hand
+    if settings.MARKET_WATCH_ENABLED:
+        _scheduler.add_job(market_watch_tick, "interval",
+                           seconds=settings.MARKET_WATCH_INTERVAL_SECONDS,
+                           id="market_watch", max_instances=1, coalesce=True)
+        _scheduler.add_job(market_watch_tick, id="market_watch_boot")
+        _scheduler.add_job(health_tick, "interval",
+                           seconds=settings.HEALTH_CHECK_INTERVAL_SECONDS,
+                           id="health_check", max_instances=1, coalesce=True)
     _scheduler.start()
     log.info("trading.scheduler.started", heavy_seconds=HEAVY_SECONDS, fast_seconds=FAST_SECONDS,
              pipeline_auto=settings.DESK_GRAPH_AUTO,

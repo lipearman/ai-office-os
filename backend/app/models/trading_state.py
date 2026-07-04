@@ -61,6 +61,21 @@ class AlertWebhook(Base, UUIDMixin, TimestampMixin):
     enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
 
+class ScanExclusion(Base, UUIDMixin, TimestampMixin):
+    """A symbol the market scan must never surface (exchange-wide, not per workspace).
+
+    Rows come from the daily market watcher (a market that vanished from Bitkub's
+    official symbols list = delisted) or are added by hand. DB-backed so a new
+    delisting needs no code change / container rebuild — unlike the static
+    DESK_SCAN_EXCLUDE_SYMBOLS config list, which stays as a bootstrap.
+    """
+    __tablename__ = "scan_exclusions"
+
+    symbol: Mapped[str] = mapped_column(String(30), nullable=False, unique=True, index=True)
+    reason: Mapped[str] = mapped_column(String(200), default="")
+    source: Mapped[str] = mapped_column(String(20), default="manual")  # manual | symbols_diff
+
+
 class TradingAlert(Base, UUIDMixin, TimestampMixin):
     """A 'new setup' alert detected by the worker (durable, replaces in-memory)."""
     __tablename__ = "trading_alerts"

@@ -78,6 +78,13 @@ class Settings(BaseSettings):
     # these from the scan by hand as Bitkub announces delistings. tradingview format
     # (BASE_THB), case-insensitive.
     DESK_SCAN_EXCLUDE_SYMBOLS: list[str] = ["SYND_THB"]
+    # market watcher: diff Bitkub's official symbols list daily (a vanished
+    # market = delisted -> auto-add to the DB denylist + alert) and run health
+    # checks (stale snapshot / empty ML cache -> alert, deduped per day).
+    MARKET_WATCH_ENABLED: bool = True
+    MARKET_WATCH_INTERVAL_SECONDS: int = 86400      # symbols diff: daily
+    HEALTH_CHECK_INTERVAL_SECONDS: int = 1800       # health: every 30 min
+    HEALTH_SNAPSHOT_STALE_SECONDS: int = 900        # snapshot older than this = frozen
     # auto paper-trading: worker opens trades on fresh setups + closes on
     # stop/target. OFF by default (turning it on lets the worker trade on its own).
     AUTO_PAPER_ENABLED: bool = False

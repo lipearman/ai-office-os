@@ -151,7 +151,7 @@ from app.trading import desk_llm
 from app.trading import auto_trader
 from app.trading.graph import get_graph
 from app.trading.state import DeskState
-from app.trading.ml import ml_vote
+from app.trading.ml import ml_vote, ml_vote_pooled
 from app.core.config import settings
 
 
@@ -179,11 +179,12 @@ async def _watchlist_items(db: AsyncSession, workspace_id) -> list[dict]:
     ]
 
 
-async def _discovered_symbols(limit: int) -> list[str]:
+async def _discovered_symbols(limit: int, extra_excluded: set[str] | None = None) -> list[str]:
     """Market discovery: top-N Bitkub THB pairs by 24h volume (one ticker call).
 
     The desk scans these on top of the watchlist so good movers surface without
-    being added by hand.
+    being added by hand. `extra_excluded` = DB-backed exclusions (delisted coins
+    found by the market watcher) merged with the static config denylist.
     """
     if limit <= 0:
         return []
@@ -194,6 +195,7 @@ async def _discovered_symbols(limit: int) -> list[str]:
         stable = {"USDT", "USDC", "BUSD", "DAI", "TUSD", "FDUSD"}
         # delisting denylist — a DE-flagged coin spikes on volume but can't be held
         excluded = {s.strip().upper() for s in settings.DESK_SCAN_EXCLUDE_SYMBOLS}
+        excluded |= extra_excluded or set()
         rows: list[tuple[str, float]] = []
         for mk, rec in ticker.items():
             if not isinstance(mk, str) or not mk.startswith("THB_") or not isinstance(rec, dict):
@@ -221,9 +223,18 @@ async def watchlist_plus_discovered(db: AsyncSession, workspace_id) -> list[dict
     surface the same scan-discovered movers.
     """
     items = await _watchlist_items(db, workspace_id)
+    # DB-backed exclusions (delisted coins) apply to the watchlist too — a coin
+    # that left the exchange must not keep a desk seat just because it's pinned
+    try:
+        from app.trading.market_watch import db_exclusions
+        excluded = await db_exclusions(db)
+    except Exception:
+        excluded = set()
+    if excluded:
+        items = [it for it in items if it["symbol"].upper() not in excluded]
     if settings.DESK_SCAN_ENABLED:
         wl = {it["symbol"] for it in items}
-        discovered = await _discovered_symbols(settings.DESK_SCAN_TOP_N)
+        discovered = await _discovered_symbols(settings.DESK_SCAN_TOP_N, excluded)
         items = items + [{"symbol": s, "cfg": None, "discovered": True}
                          for s in discovered if s not in wl]
     return items
@@ -639,22 +650,36 @@ async def refresh_ml_votes(db: AsyncSession, workspace_id) -> int:
             return 0
         client = BitkubClient()
         rr = r or await get_redis()
-        done = 0
-        votes: dict[str, float] = {}
+        candle_sets: dict[str, list] = {}
         for it in items:
             sym = it["symbol"]
             tf = (it.get("cfg") or {}).get("timeframe") or "1H"
             try:
-                candles = await client.fetch_ohlcv(sym, tf, limit=1500)
+                candle_sets[sym] = await client.fetch_ohlcv(sym, tf, limit=1500)
+            except Exception:
+                continue
+        votes: dict[str, float] = {}
+        mode = "per_coin"
+        if settings.ML_VOTE_POOLED:
+            # one model over all coins pooled — steadier votes, one fit not N
+            votes = ml_vote_pooled(candle_sets)
+            if votes:
+                mode = "pooled"
+        if not votes:
+            for sym, candles in candle_sets.items():
                 prob = ml_vote(candles)
                 if prob is not None:
                     votes[sym] = prob
-                    await rr.setex(ML_VOTE_KEY.format(symbol=sym),
-                                   settings.ML_VOTE_TTL_SECONDS, str(round(prob, 4)))
-                    done += 1
+        done = 0
+        for sym, prob in votes.items():
+            try:
+                await rr.setex(ML_VOTE_KEY.format(symbol=sym),
+                               settings.ML_VOTE_TTL_SECONDS, str(round(prob, 4)))
+                done += 1
             except Exception:
                 continue
-        log.info("desk_ml_votes_refreshed", workspace=str(workspace_id), count=done)
+        log.info("desk_ml_votes_refreshed", workspace=str(workspace_id),
+                 count=done, mode=mode)
         try:
             await reconcile_auto_watchlist(db, workspace_id, votes, rr)
         except Exception as e:

@@ -9,12 +9,12 @@ from app.core.database import get_db
 from app.models.user import User
 from app.models.watchlist import WatchlistItem
 from app.models.paper import PaperTrade
-from app.models.trading_state import TradingAlert, DeskLLMConfig, AlertWebhook
+from app.models.trading_state import TradingAlert, DeskLLMConfig, AlertWebhook, ScanExclusion
 from app.trading import alert_webhook
 from app.schemas.trading import (
     WatchlistItemOut, WatchlistItemCreate, WatchlistItemUpdate, PaperOpen,
 )
-from app.trading.paper import fill_open, close_pnl, unrealized, paper_stats
+from app.trading.paper import fill_open, close_pnl, unrealized, paper_stats, calibration_stats
 from app.trading.news import fetch_news, aggregate_sentiment
 from app.trading import desk_store
 from app.core.config import settings
@@ -44,6 +44,54 @@ async def list_symbols(current_user: User = Depends(get_current_user)):
             "info": s.get("info", ""),
         })
     return out
+
+
+# ── scan exclusions (DB-backed delisting denylist) ──────────────
+@router.get("/exclusions")
+async def list_exclusions(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Denylist the market scan skips (delisted coins). Managed by the daily
+    market watcher; rows can also be added/removed here without a redeploy."""
+    res = await db.execute(select(ScanExclusion).order_by(ScanExclusion.created_at.desc()))
+    rows = res.scalars().all()
+    return {"exclusions": [
+        {"id": str(x.id), "symbol": x.symbol, "reason": x.reason,
+         "source": x.source, "created_at": x.created_at.isoformat() if x.created_at else None}
+        for x in rows
+    ], "config_static": settings.DESK_SCAN_EXCLUDE_SYMBOLS}
+
+
+@router.post("/exclusions", status_code=201)
+async def add_exclusion(
+    payload: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    symbol = str(payload.get("symbol", "")).strip().upper()
+    if not symbol or "_" not in symbol:
+        raise HTTPException(status_code=422, detail="symbol ต้องเป็นรูปแบบ BASE_THB เช่น SYND_THB")
+    existing = await db.execute(select(ScanExclusion).where(ScanExclusion.symbol == symbol))
+    if existing.scalar_one_or_none():
+        raise HTTPException(status_code=409, detail=f"{symbol} อยู่ใน denylist แล้ว")
+    db.add(ScanExclusion(symbol=symbol, reason=str(payload.get("reason", ""))[:200],
+                         source="manual"))
+    await db.commit()
+    return {"symbol": symbol, "status": "added"}
+
+
+@router.delete("/exclusions/{symbol}")
+async def remove_exclusion(
+    symbol: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    res = await db.execute(delete(ScanExclusion).where(ScanExclusion.symbol == symbol.upper()))
+    await db.commit()
+    if res.rowcount == 0:
+        raise HTTPException(status_code=404, detail=f"{symbol} ไม่อยู่ใน denylist")
+    return {"symbol": symbol.upper(), "status": "removed"}
 
 
 # ── single-symbol analysis ──────────────────────────────────────
@@ -891,6 +939,9 @@ async def paper_stats_endpoint(
             PaperTrade.workspace_id == workspace_id, PaperTrade.status == "CLOSED"
         )
     )
-    closed = [{"pnl_pct": t.pnl_pct or 0.0, "pnl_thb": t.pnl_thb or 0.0}
+    closed = [{"pnl_pct": t.pnl_pct or 0.0, "pnl_thb": t.pnl_thb or 0.0,
+               "strategy": t.strategy, "indicators": t.indicators}
               for t in res.scalars().all()]
-    return paper_stats(closed)
+    out = paper_stats(closed)
+    out["calibration"] = calibration_stats(closed)
+    return out
