@@ -143,7 +143,7 @@ from app.models.paper import PaperTrade
 from app.models.trading_state import DeskSnapshot, TradingAlert, DeskLLMConfig, AlertWebhook
 from app.models.agent import Agent
 from app.trading import alert_webhook
-from app.trading.service import daily_opportunities, build_desk
+from app.trading.service import daily_opportunities, build_desk, market_breadth, is_early_turn
 from app.trading.paper import unrealized, paper_stats
 from app.trading.news import fetch_news, aggregate_sentiment
 from app.trading.bitkub import BitkubClient, to_market_symbol, to_tradingview_symbol
@@ -321,6 +321,32 @@ async def get_snapshot(db: AsyncSession, workspace_id) -> DeskSnapshot | None:
     return res.scalar_one_or_none()
 
 
+async def _notify_market_events(opps: list[dict], news_agg: dict) -> None:
+    """Regime flips + strong news → Telegram (deduped; regime state in Redis)."""
+    from app.trading import notify
+    regime = next((o["market_bias"] for o in opps if o.get("market_bias")), "neutral")
+    try:
+        r = await get_redis()
+        prev = await r.get("notify:regime")
+        prev = prev.decode() if isinstance(prev, bytes) else prev
+        if prev and prev != regime:
+            await notify.send(notify.fmt_regime(prev, regime), tier=2,
+                              dedupe_key=f"regime:{regime}", dedupe_ttl=43200)
+        await r.set("notify:regime", regime)
+    except Exception:
+        pass
+    for a in (news_agg or {}).get("assets", []) or []:
+        s = a.get("sentiment") or 0
+        if (abs(s) >= settings.NOTIFY_NEWS_MIN_ABS_SENTIMENT
+                and (a.get("count") or 0) >= settings.NOTIFY_NEWS_MIN_COUNT):
+            head = (a.get("headlines") or [{}])[0].get("title", "")
+            await notify.send(
+                notify.fmt_news(a.get("asset", "?"), s, a.get("label", ""),
+                                a.get("count", 0), head),
+                tier=3,
+                dedupe_key=f"news:{a.get('asset')}:{'p' if s > 0 else 'n'}")
+
+
 async def compute_full(db: AsyncSession, workspace_id, force_graph: bool = False) -> DeskSnapshot:
     """Heavy tick: full analysis → LangGraph pipeline → upsert snapshot + detect alerts.
 
@@ -349,6 +375,13 @@ async def compute_full(db: AsyncSession, workspace_id, force_graph: bool = False
     assets = sorted({w["symbol"].split("_")[0] for w in items})
     news_items = await fetch_news()
     news_agg = aggregate_sentiment(news_items, assets or None)
+
+    # Telegram: market-level intel — regime flips (tier 2) + unusually strong
+    # per-asset news (tier 3). Best-effort; a Telegram hiccup can't hurt the tick.
+    try:
+        await _notify_market_events(opps, news_agg)
+    except Exception as e:
+        log.warning("notify.market_events_failed", error=str(e))
 
     # deterministic fallback (always computed, used when graph is unavailable)
     det_chars = build_desk(opps, positions, stats, news_agg, prices, _seed())
@@ -507,12 +540,66 @@ async def compute_full(db: AsyncSession, workspace_id, force_graph: bool = False
             "symbol": sym, "strategy": o.get("strategy"), "timeframe": o.get("timeframe"),
             "win_chance_pct": o.get("win_chance_pct"), "label": o.get("label"), "text": text,
         })
+        # Telegram: ML-confirmed fresh setup = tier-1 entry timing; a rule signal
+        # the ML vetoes is a tier-2 near-miss (shows the system holding back)
+        try:
+            from app.trading import notify, tuning
+            floor = (await tuning.get_params(db))["ML_VOTE_MIN_PROB"]
+            mp = o.get("ml_prob")
+            if mp is not None and mp >= floor:
+                await notify.send(notify.fmt_entry(o), tier=1,
+                                  dedupe_key=f"entry:{sym}")
+            else:
+                await notify.send(
+                    f"🟡 เกือบครบเงื่อนไข — {sym}\n"
+                    f"มีสัญญาณกฎ (win ~{o.get('win_chance_pct')}%) แต่ ML ให้ "
+                    f"{mp if mp is not None else 'ไม่มีคะแนน'} < {floor} — ระบบขอรอ",
+                    tier=2, dedupe_key=f"nearmiss:{sym}")
+        except Exception as e:
+            log.warning("notify.setup_failed", error=str(e))
 
     # stash analysis so the cheap price-only tick can rebuild without re-scanning
     fact_lines = {c["key"]: c["message"] for c in det_chars}
     ticker = await _live_ticker(items)
+
+    # early-turn detector: breadth EMA + news vs the (slow) structural regime.
+    # State lives in Redis so auto_open (next tick) can soften the bearish
+    # extras; a flip in either direction notifies once (tier 2).
+    breadth = market_breadth(ticker)
+    early_turn = False
+    if settings.REGIME_TURN_ENABLED and breadth is not None:
+        try:
+            from app.trading import notify
+            r = await get_redis()
+            prev = await r.get("regime:breadth_ema")
+            prev_f = float(prev) if prev else breadth
+            ema = round(prev_f + settings.REGIME_TURN_EMA_ALPHA * (breadth - prev_f), 4)
+            await r.set("regime:breadth_ema", str(ema))
+            regime = next((o["market_bias"] for o in opps if o.get("market_bias")), "neutral")
+            senti = [a.get("sentiment") for a in (news_agg or {}).get("assets", [])
+                     if a.get("sentiment") is not None]
+            news_sent = sum(senti) / len(senti) if senti else None
+            early_turn = is_early_turn(regime == "bearish", ema, news_sent,
+                                       settings.REGIME_TURN_BREADTH)
+            was = (await r.get("regime:early_turn")) in (b"1", "1")
+            await r.set("regime:early_turn", "1" if early_turn else "0")
+            # early-turn is a STATE, not a moment — send while it holds (dedupe
+            # fires it once per 12h). A flip inside quiet hours is then delivered
+            # right after 08:00 instead of being swallowed forever: the quiet-
+            # hours gate runs BEFORE the dedupe key is written, so a muted
+            # attempt leaves no key and the next tick simply retries.
+            if early_turn:
+                await notify.send(notify.fmt_early_turn(int(ema * 100), news_sent or 0.0),
+                                  tier=2, dedupe_key="earlyturn:on", dedupe_ttl=43200)
+            elif was and not early_turn:
+                await notify.send("🌫️ ถอนสัญญาณกลับตัว — breadth อ่อนลง กลับไปเกณฑ์หมีเต็ม",
+                                  tier=2, dedupe_key="earlyturn:off", dedupe_ttl=43200)
+        except Exception as e:
+            log.warning("early_turn_failed", error=str(e))
+
     meta = {"opps": opps, "stats": stats, "news_agg": news_agg, "prices": prices,
             "ticker": ticker,
+            "breadth": breadth, "early_turn": early_turn,
             "fact_lines": fact_lines, "role_overrides": role_overrides,
             "agent_configs": agent_configs,
             "graph_active": len(graph_commentary) > 0}
@@ -759,6 +846,14 @@ async def reconcile_auto_watchlist(db: AsyncSession, workspace_id, votes: dict[s
     if to_add or to_remove:
         log.info("auto_watchlist_reconciled", workspace=str(workspace_id),
                  added=to_add, removed=to_remove)
+    # Telegram tier 2: a coin crossing the ML bar onto the radar is worth a ping
+    for s in to_add:
+        try:
+            from app.trading import notify
+            await notify.send(notify.fmt_radar(s, votes.get(s, 0.0)), tier=2,
+                              dedupe_key=f"radar:{s}")
+        except Exception:
+            pass
 
 
 async def refresh_prices(db: AsyncSession, workspace_id) -> DeskSnapshot | None:

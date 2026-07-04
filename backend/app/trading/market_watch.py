@@ -99,6 +99,7 @@ async def sync_market_symbols(db: AsyncSession) -> dict:
              for s in await r.smembers(SYMBOLS_PREV_KEY)}
     vanished, appeared = diff_symbols(known, current)
 
+    from app.trading import notify
     excluded_now = await db_exclusions(db)
     for sym in sorted(vanished):
         if sym not in excluded_now:
@@ -107,14 +108,15 @@ async def sync_market_symbols(db: AsyncSession) -> dict:
                 reason="หายจากรายชื่อตลาด Bitkub (คาดว่าถูก delist)",
             ))
         if not await _recent_alert_exists(db, sym):
-            await _alert_all_workspaces(
-                db, sym,
-                f"⚠️ {sym} หายจากรายชื่อตลาด Bitkub — คาดว่าถูก delist "
-                f"(ตัดออกจากการสแกนให้แล้ว ถ้าถือจริงต้องรีบจัดการ)")
+            text = (f"⚠️ {sym} หายจากรายชื่อตลาด Bitkub — คาดว่าถูก delist "
+                    f"(ตัดออกจากการสแกนให้แล้ว ถ้าถือจริงต้องรีบจัดการ)")
+            await _alert_all_workspaces(db, sym, text)
+            await notify.send(text, tier=3, dedupe_key=f"delist:{sym}")
     for sym in sorted(appeared):
         if not await _recent_alert_exists(db, sym):
-            await _alert_all_workspaces(
-                db, sym, f"🆕 {sym} เป็นตลาดใหม่บน Bitkub — เริ่มเข้ารอบสแกนได้")
+            text = f"🆕 {sym} เป็นตลาดใหม่บน Bitkub — เริ่มเข้ารอบสแกนได้"
+            await _alert_all_workspaces(db, sym, text)
+            await notify.send(text, tier=3, dedupe_key=f"newmarket:{sym}")
 
     await r.delete(SYMBOLS_PREV_KEY)
     await r.sadd(SYMBOLS_PREV_KEY, *current)
@@ -160,6 +162,11 @@ async def health_check(db: AsyncSession) -> list[str]:
     for text in problems:
         if not await _recent_alert_exists(db, HEALTH_KIND):
             await _alert_all_workspaces(db, HEALTH_KIND, text)
+            try:
+                from app.trading import notify
+                await notify.send(text, tier=4, dedupe_key=f"health:{text[:40]}")
+            except Exception:
+                pass
     if problems:
         await db.commit()
         log.warning("market_watch.health_problems", problems=problems)

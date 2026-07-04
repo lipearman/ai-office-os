@@ -493,8 +493,18 @@ export default function TradingPage() {
               <span className="rounded-md px-2 py-0.5 text-xs font-bold" style={{ color: r.fg, background: r.bg }}>
                 {r.txt}
               </span>
+              {game.early_turn && (
+                <span className="rounded-md px-2 py-0.5 text-xs font-bold"
+                  style={{ color: "#fbbf24", background: "rgba(251,191,36,0.12)" }}
+                  title="breadth + ข่าวชี้ว่าขาลงอาจกำลังกลับตัว — เกณฑ์พิเศษหมีถูกผ่อนครึ่งหนึ่ง">
+                  🌅 อาจกำลังกลับตัว
+                </span>
+              )}
               <div className="flex-1" />
-              <span className="text-[10px] text-white/30">เหรียญที่สแกน {game.scanned} · สัญญาณวันนี้ {game.signals_today}</span>
+              <span className="text-[10px] text-white/30">
+                เหรียญที่สแกน {game.scanned} · สัญญาณวันนี้ {game.signals_today}
+                {game.breadth != null && <> · 🌡️ เขียว {Math.round(game.breadth * 100)}%</>}
+              </span>
             </div>
 
             {/* verdict banner */}

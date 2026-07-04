@@ -287,6 +287,30 @@ async def market_regime(client: BitkubClient, symbol: str = "BTC_THB", tf: str =
     return {"bias": bias, "tf": tf, "detail": f"BTC {bias}"}
 
 
+def market_breadth(ticker: dict) -> float | None:
+    """Fraction of scanned coins green over 24h (0..1). Pure — unit-tested.
+
+    The structural regime (BTC EMA50/200) is deliberately slow; breadth is the
+    fast, market-wide tell that a downtrend is turning — e.g. 15/20 coins green
+    with alts leading showed up a full regime-flip before the EMAs could move.
+    """
+    chg = [t.get("c") for t in (ticker or {}).values()
+           if isinstance(t, dict) and t.get("c") is not None]
+    if not chg:
+        return None
+    return round(sum(1 for c in chg if c > 0) / len(chg), 3)
+
+
+def is_early_turn(structural_bearish: bool, breadth_ema: float | None,
+                  news_sentiment: float | None, threshold: float) -> bool:
+    """Early-turn = structure still bearish BUT breadth holds above threshold and
+    news is not negative. Pure — unit-tested. Used to SOFTEN the extra bearish
+    penalties only; the base (backtested) entry gates are never touched."""
+    if not structural_bearish or breadth_ema is None:
+        return False
+    return breadth_ema >= threshold and (news_sentiment or 0.0) >= 0.0
+
+
 async def daily_opportunities(items: list[dict], concurrency: int = 4,
                               ml_votes: dict | None = None) -> list[dict]:
     """Evaluate each watchlist item (symbol + assigned cfg) → ranked by score.

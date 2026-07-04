@@ -400,7 +400,9 @@ async def trading_desk(
         "ticker": live_ticker or meta.get("ticker", {}),
         "news_agg": meta.get("news_agg", {}),
         "watch": watch,
-        "game_summary": _game_summary(opps, floor),
+        "game_summary": {**_game_summary(opps, floor),
+                         "breadth": meta.get("breadth"),
+                         "early_turn": bool(meta.get("early_turn"))},
         "status": "ready",
         "computed_at": snap.computed_at.isoformat() if snap.computed_at else None,
     }

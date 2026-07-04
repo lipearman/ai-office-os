@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.models.paper import PaperTrade
-from app.trading import tuning
+from app.trading import notify, tuning
 from app.trading.paper import fill_open, close_pnl
 from app.trading.bitkub import BitkubClient
 
@@ -46,6 +46,17 @@ async def auto_open(db: AsyncSession, workspace_id, opps: list[dict], prices: di
     if slots <= 0:
         return []
 
+    # early-turn (breadth + news say the downtrend is turning while structure is
+    # still bearish, computed each heavy tick): soften the EXTRA bearish
+    # penalties by half. The base gates below are never touched.
+    bear_scale = 1.0
+    try:
+        from app.core.redis import get_redis
+        if (await (await get_redis()).get("regime:early_turn")) in (b"1", "1"):
+            bear_scale = 0.5
+    except Exception:
+        pass
+
     opened: list[str] = []
     for o in opps:
         if slots <= 0:
@@ -55,7 +66,7 @@ async def auto_open(db: AsyncSession, workspace_id, opps: list[dict], prices: di
         # against a bearish BTC trend, demand a stronger edge to open a long
         min_win = p["AUTO_PAPER_MIN_WIN_PCT"]
         if o.get("market_bias") == "bearish":
-            min_win += p["AUTO_PAPER_BEARISH_WIN_EXTRA"]
+            min_win += p["AUTO_PAPER_BEARISH_WIN_EXTRA"] * bear_scale
         if (o.get("win_chance_pct") or 0) < min_win:
             continue
         # ML ensemble gate: when ML is on, only open if the model confirms (P_up
@@ -70,7 +81,7 @@ async def auto_open(db: AsyncSession, workspace_id, opps: list[dict], prices: di
             # tide, so demand extra model conviction on top of the base floor
             ml_floor = p["ML_VOTE_MIN_PROB"]
             if o.get("market_bias") == "bearish":
-                ml_floor += p["AUTO_PAPER_BEARISH_ML_EXTRA"]
+                ml_floor += p["AUTO_PAPER_BEARISH_ML_EXTRA"] * bear_scale
             if mp is None or mp < ml_floor:
                 if mp is None:
                     log.info("auto_paper.skip_no_ml_vote", symbol=o.get("symbol"))
@@ -103,6 +114,11 @@ async def auto_open(db: AsyncSession, workspace_id, opps: list[dict], prices: di
         opened.append(sym)
         open_syms.add(sym)
         slots -= 1
+        try:
+            await notify.send(notify.fmt_entry(o, opened_thb=size), tier=1,
+                              dedupe_key=f"opened:{sym}")
+        except Exception:
+            pass
     if opened:
         log.info("auto_paper.opened", workspace=str(workspace_id), symbols=opened)
     return opened
@@ -143,6 +159,11 @@ async def auto_close(db: AsyncSession, workspace_id, prices: dict | None = None)
                 if new_stop > t.stop:
                     t.stop = new_stop
                     log.info("auto_paper.breakeven", symbol=t.symbol, stop=round(new_stop, 4))
+                    try:
+                        await notify.send(notify.fmt_breakeven(t.symbol, round(new_stop, 4)),
+                                          tier=1, dedupe_key=f"be:{t.symbol}:{t.id}")
+                    except Exception:
+                        pass
         reason = None
         if t.stop and cur <= t.stop:
             # a stop raised to/above entry is a protected winner, not a loss
@@ -170,6 +191,12 @@ async def auto_close(db: AsyncSession, workspace_id, prices: dict | None = None)
         t.pnl_pct = pnl["pnl_pct"]
         t.result = pnl["result"]
         closed.append(t.symbol)
+        try:
+            await notify.send(
+                notify.fmt_close(t.symbol, reason, pnl["pnl_thb"], pnl["pnl_pct"], cur),
+                tier=1, dedupe_key=f"closed:{t.symbol}:{t.id}")
+        except Exception:
+            pass
     if closed:
         log.info("auto_paper.closed", workspace=str(workspace_id), symbols=closed)
     return closed

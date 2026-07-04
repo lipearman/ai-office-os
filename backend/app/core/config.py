@@ -95,6 +95,22 @@ class Settings(BaseSettings):
     COACH_INTERVAL_SECONDS: int = 604800            # one tuning pass per week
     COACH_CHECK_SECONDS: int = 21600                # how often the tick checks if due
     COACH_MIN_TRADES: int = 10                      # below this: report only, no tuning
+    # Telegram notifications (best-effort, tiered). Empty token = feature off.
+    # CHAT_ID may be left empty: it is auto-discovered from getUpdates after the
+    # user presses Start on the bot, then cached in Redis.
+    TELEGRAM_BOT_TOKEN: str = ""
+    TELEGRAM_CHAT_ID: str = ""
+    NOTIFY_TIERS: str = "1,2,3,4"                   # which tiers may send at all
+    NOTIFY_QUIET_START_HOUR: int = 0                # local (Asia/Bangkok) quiet window:
+    NOTIFY_QUIET_END_HOUR: int = 8                  # only tier 1 sends inside it
+    NOTIFY_NEWS_MIN_ABS_SENTIMENT: float = 0.5      # tier-3 news bar: |sentiment| >= this
+    NOTIFY_NEWS_MIN_COUNT: int = 2                  # ...backed by at least this many headlines
+    # early-turn detector: market breadth (fraction of scanned coins green 24h,
+    # EMA-smoothed) + non-negative news while the structural regime is still
+    # bearish -> soften the EXTRA bearish penalties by half (base gates untouched)
+    REGIME_TURN_ENABLED: bool = True
+    REGIME_TURN_BREADTH: float = 0.6                # smoothed breadth >= this
+    REGIME_TURN_EMA_ALPHA: float = 0.1              # per heavy tick (~1h to converge)
     # auto paper-trading: worker opens trades on fresh setups + closes on
     # stop/target. OFF by default (turning it on lets the worker trade on its own).
     AUTO_PAPER_ENABLED: bool = False

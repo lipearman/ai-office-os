@@ -226,6 +226,11 @@ async def run_coach(db, workspace_id, force: bool = False) -> dict:
             text = f"{text} · {extra}"
         db.add(TradingAlert(workspace_id=workspace_id, symbol=COACH_KIND,
                             text=text[:300]))
+        try:
+            from app.trading import notify
+            await notify.send(text, tier=4, dedupe_key=f"coach:{int(time.time() // 86400)}")
+        except Exception:
+            pass
         await db.commit()
         if r is not None:
             try:
