@@ -98,6 +98,14 @@ class Settings(BaseSettings):
     # distance) in our favor, raise the stop to entry + round-trip fees so a
     # winner can no longer turn into a full loser. 0 = off.
     AUTO_PAPER_BREAKEVEN_AT_R: float = 1.0
+    # in a bearish BTC regime a spot-only desk can't short, so longs fight the
+    # tide — demand extra ML conviction on top of ML_VOTE_MIN_PROB to open one.
+    AUTO_PAPER_BEARISH_ML_EXTRA: float = 0.05
+    # train ONE model on all scanned coins pooled (features are scale-free
+    # ratios) instead of one model per coin: ~20x the training rows makes the
+    # per-coin P(up) far less noisy, and one fit is cheaper than twenty.
+    # Falls back to per-coin training when off or when pooling fails.
+    ML_VOTE_POOLED: bool = True
     # per-LLM-call timeout (s) — stops a hung Ollama call from blocking a tick
     LLM_TIMEOUT_SECONDS: float = 30.0
     # overall heavy-tick watchdog (s) — cancel a stuck compute so the next tick

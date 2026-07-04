@@ -1329,6 +1329,32 @@ export default function TradingPage() {
           </div>
         )}
 
+        {/* calibration: predicted win% vs realized, per strategy */}
+        {(paperStats?.calibration?.strategies?.length ?? 0) > 0 && (
+          <div className="px-4 pb-3">
+            <p className="mb-1.5 text-[11px] font-semibold text-white/50">
+              🎯 ความแม่นของคำทำนาย (ทำนาย vs จริง ต่อกลยุทธ์)
+            </p>
+            {paperStats.calibration.strategies.map((s: any) => (
+              <div key={s.strategy} className="flex items-center gap-3 border-b border-white/5 py-1.5 text-[11px]">
+                <span className="w-40 truncate font-mono text-white/70">{s.strategy}</span>
+                <span className="text-white/40">{s.trades} ไม้</span>
+                <span className="text-white/50">ทำนาย {s.predicted_win_pct != null ? `${s.predicted_win_pct}%` : "—"}</span>
+                <span className="text-white/50">จริง {s.realized_win_pct}%</span>
+                {s.gap_pct != null && (
+                  <span className="ml-auto font-semibold"
+                    style={{ color: s.gap_pct >= 0 ? "#4ade80" : s.gap_pct >= -10 ? "#f59e0b" : "#f87171" }}>
+                    {s.gap_pct >= 0 ? "+" : ""}{s.gap_pct} pts
+                  </span>
+                )}
+              </div>
+            ))}
+            <p className="mt-1 text-[10px] text-white/30">
+              ติดลบ = กลยุทธ์โม้ (ทำนายสูงกว่าผลจริง) — ยิ่งมีไม้ปิดมาก ตัวเลขยิ่งเชื่อถือได้
+            </p>
+          </div>
+        )}
+
         {/* open positions */}
         <div className="px-4 pb-2">
           <p className="mb-1.5 text-[11px] font-semibold text-white/50">Open Positions ({paperPos.length})</p>

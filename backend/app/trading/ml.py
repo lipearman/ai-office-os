@@ -93,6 +93,50 @@ def ml_vote(candles: list[Candle], horizon: int = 8) -> float | None:
         return None
 
 
+def ml_vote_pooled(candle_sets: dict[str, list[Candle]], horizon: int = 8) -> dict[str, float]:
+    """P(up) per symbol from ONE ensemble trained on all symbols pooled.
+
+    Every feature is a scale-free ratio (RSI/100, close/EMA-1, ATR/close, ...),
+    so rows from different coins live in the same space and can share a model.
+    Pooling turns ~N00 rows/coin into ~N000 training rows — the per-coin vote
+    stops swinging wildly tick to tick — and one fit replaces one per coin.
+    Returns {} when there isn't enough pooled data (caller should fall back).
+    """
+    try:
+        X_parts, y_parts = [], []
+        latest: dict[str, np.ndarray] = {}
+        for sym, candles in candle_sets.items():
+            try:
+                df = indicator_frame(candles, closed_only=True).reset_index(drop=True)
+                feats = _features(df).replace([np.inf, -np.inf], np.nan)
+                train = feats.copy()
+                train["y"] = _label(df, horizon, BacktestParams().fee)
+                train = train.dropna()
+                if not train.empty:
+                    X_parts.append(train[FEATURES].to_numpy())
+                    y_parts.append(train["y"].to_numpy())
+                last = feats.dropna()
+                if not last.empty:
+                    latest[sym] = last[FEATURES].to_numpy()[-1:].astype(float)
+            except Exception:
+                continue
+        if not X_parts or not latest:
+            return {}
+        X = np.concatenate(X_parts)
+        y = np.concatenate(y_parts)
+        if len(X) < 300 or len(set(y)) < 2:
+            return {}
+        xgb, logit = _models()
+        xgb.fit(X, y)
+        logit.fit(X, y)
+        syms = list(latest.keys())
+        x_pred = np.concatenate([latest[s] for s in syms])
+        p = 0.5 * xgb.predict_proba(x_pred)[:, 1] + 0.5 * logit.predict_proba(x_pred)[:, 1]
+        return {s: float(v) for s, v in zip(syms, p)}
+    except Exception:
+        return {}
+
+
 def ml_report(candles: list[Candle], horizon: int = 8, n_splits: int = 3) -> dict:
     from sklearn.model_selection import TimeSeriesSplit
     from sklearn.metrics import accuracy_score, roc_auc_score

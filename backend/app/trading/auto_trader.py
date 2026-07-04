@@ -62,7 +62,12 @@ async def auto_open(db: AsyncSession, workspace_id, opps: list[dict], prices: di
         # Missing a setup is cheaper than trading against our own model.
         if settings.DESK_ML_VOTE_ENABLED:
             mp = o.get("ml_prob")
-            if mp is None or mp < settings.ML_VOTE_MIN_PROB:
+            # spot-only desk can't short: a long in a bearish regime fights the
+            # tide, so demand extra model conviction on top of the base floor
+            ml_floor = settings.ML_VOTE_MIN_PROB
+            if o.get("market_bias") == "bearish":
+                ml_floor += settings.AUTO_PAPER_BEARISH_ML_EXTRA
+            if mp is None or mp < ml_floor:
                 if mp is None:
                     log.info("auto_paper.skip_no_ml_vote", symbol=o.get("symbol"))
                 continue
@@ -82,7 +87,14 @@ async def auto_open(db: AsyncSession, workspace_id, opps: list[dict], prices: di
             stop=plan.get("stop"), target=plan.get("target"), fee_pct=fill["fee_pct"],
             status="OPEN",
             rationale=f"auto-paper: win~{o.get('win_chance_pct')}% · {o.get('label', '')}",
-            indicators={},
+            # snapshot the prediction at entry so closed trades can be scored
+            # against it later (calibration: predicted win% vs realized win rate)
+            indicators={
+                "win_chance_pct": o.get("win_chance_pct"),
+                "ml_prob": o.get("ml_prob"),
+                "market_bias": o.get("market_bias"),
+                "opportunity_score": o.get("opportunity_score"),
+            },
         ))
         opened.append(sym)
         open_syms.add(sym)
