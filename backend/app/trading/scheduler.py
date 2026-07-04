@@ -26,8 +26,8 @@ from app.trading import desk_store
 log = structlog.get_logger()
 _scheduler: AsyncIOScheduler | None = None
 
-HEAVY_SECONDS = 180
-FAST_SECONDS = 20
+HEAVY_SECONDS = settings.DESK_HEAVY_SECONDS
+FAST_SECONDS = settings.DESK_FAST_SECONDS
 
 
 async def _active_workspaces() -> list:
@@ -152,6 +152,17 @@ async def health_tick() -> None:
         log.warning("health_tick_failed", error=str(e))
 
 
+async def coach_tick() -> None:
+    """Periodic check; the coach itself runs at most once per COACH_INTERVAL."""
+    from app.trading import coach
+    try:
+        async with AsyncSessionLocal() as db:
+            for ws in await coach.coach_workspaces(db):
+                await coach.run_coach(db, ws)
+    except Exception as e:
+        log.warning("coach_tick_failed", error=str(e))
+
+
 async def fast_tick() -> None:
     """Cheap price-only refresh of every workspace that already has a snapshot."""
     try:
@@ -196,6 +207,13 @@ def start_scheduler() -> None:
         _scheduler.add_job(health_tick, "interval",
                            seconds=settings.HEALTH_CHECK_INTERVAL_SECONDS,
                            id="health_check", max_instances=1, coalesce=True)
+    # weekly coach — the tick checks often, the Redis last-run stamp makes the
+    # actual tuning pass happen once per COACH_INTERVAL_SECONDS
+    if settings.COACH_ENABLED:
+        _scheduler.add_job(coach_tick, "interval",
+                           seconds=settings.COACH_CHECK_SECONDS,
+                           id="desk_coach", max_instances=1, coalesce=True)
+        _scheduler.add_job(coach_tick, id="desk_coach_boot")
     _scheduler.start()
     log.info("trading.scheduler.started", heavy_seconds=HEAVY_SECONDS, fast_seconds=FAST_SECONDS,
              pipeline_auto=settings.DESK_GRAPH_AUTO,

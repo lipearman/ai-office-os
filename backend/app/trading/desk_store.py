@@ -233,8 +233,10 @@ async def watchlist_plus_discovered(db: AsyncSession, workspace_id) -> list[dict
     if excluded:
         items = [it for it in items if it["symbol"].upper() not in excluded]
     if settings.DESK_SCAN_ENABLED:
+        from app.trading import tuning
+        top_n = int((await tuning.get_params(db))["DESK_SCAN_TOP_N"])
         wl = {it["symbol"] for it in items}
-        discovered = await _discovered_symbols(settings.DESK_SCAN_TOP_N, excluded)
+        discovered = await _discovered_symbols(top_n, excluded)
         items = items + [{"symbol": s, "cfg": None, "discovered": True}
                          for s in discovered if s not in wl]
     return items
@@ -722,9 +724,11 @@ async def reconcile_auto_watchlist(db: AsyncSession, workspace_id, votes: dict[s
     """
     if not settings.AUTO_WATCHLIST_FROM_ML:
         return
-    floor = settings.ML_VOTE_MIN_PROB
+    from app.trading import tuning
+    tp = await tuning.get_params(db)
+    floor = tp["ML_VOTE_MIN_PROB"]
     ranked = sorted(((s, p) for s, p in votes.items() if p >= floor), key=lambda x: -x[1])
-    desired = [s for s, _ in ranked[: settings.AUTO_WATCHLIST_TOP_N]]
+    desired = [s for s, _ in ranked[: int(tp["AUTO_WATCHLIST_TOP_N"])]]
 
     res = await db.execute(select(WatchlistItem).where(WatchlistItem.workspace_id == workspace_id))
     current = {w.symbol: w for w in res.scalars().all()}

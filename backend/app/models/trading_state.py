@@ -76,6 +76,21 @@ class ScanExclusion(Base, UUIDMixin, TimestampMixin):
     source: Mapped[str] = mapped_column(String(20), default="manual")  # manual | symbols_diff
 
 
+class DeskTuning(Base, UUIDMixin, TimestampMixin):
+    """One runtime override of a tunable trading parameter (see trading/tuning.py).
+
+    Written by the weekly coach (from real closed-trade results) or by hand via
+    the API. Values are clamped to the TUNABLE bounds on every read AND write,
+    so a bad row can never push the system outside its safety envelope.
+    """
+    __tablename__ = "desk_tunings"
+
+    key: Mapped[str] = mapped_column(String(50), nullable=False, unique=True, index=True)
+    value: Mapped[float] = mapped_column(Float, nullable=False)
+    reason: Mapped[str] = mapped_column(String(200), default="")
+    source: Mapped[str] = mapped_column(String(20), default="coach")  # coach | manual
+
+
 class TradingAlert(Base, UUIDMixin, TimestampMixin):
     """A 'new setup' alert detected by the worker (durable, replaces in-memory)."""
     __tablename__ = "trading_alerts"

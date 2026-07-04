@@ -68,6 +68,9 @@ class Settings(BaseSettings):
     # running a dedicated worker (`python -m app.trading.worker`) so the ticks
     # don't run twice.
     RUN_WORKER_IN_PROCESS: bool = True
+    # worker tick cadence (were hardcoded in scheduler.py)
+    DESK_HEAVY_SECONDS: int = 180                   # full analysis + snapshot
+    DESK_FAST_SECONDS: int = 20                     # price-only refresh
     # desk market discovery: scan the top-N Bitkub THB pairs by 24h volume on top
     # of the watchlist, so movers surface automatically. 0 / False = watchlist only.
     DESK_SCAN_ENABLED: bool = True
@@ -85,6 +88,13 @@ class Settings(BaseSettings):
     MARKET_WATCH_INTERVAL_SECONDS: int = 86400      # symbols diff: daily
     HEALTH_CHECK_INTERVAL_SECONDS: int = 1800       # health: every 30 min
     HEALTH_SNAPSHOT_STALE_SECONDS: int = 900        # snapshot older than this = frozen
+    # weekly coach: reads closed-trade results (calibration, exit reasons, regime
+    # win rate) and nudges the tunable params within their hard bounds — see
+    # trading/tuning.py TUNABLE. Deterministic rules decide; LLM only narrates.
+    COACH_ENABLED: bool = True
+    COACH_INTERVAL_SECONDS: int = 604800            # one tuning pass per week
+    COACH_CHECK_SECONDS: int = 21600                # how often the tick checks if due
+    COACH_MIN_TRADES: int = 10                      # below this: report only, no tuning
     # auto paper-trading: worker opens trades on fresh setups + closes on
     # stop/target. OFF by default (turning it on lets the worker trade on its own).
     AUTO_PAPER_ENABLED: bool = False
@@ -108,6 +118,9 @@ class Settings(BaseSettings):
     # in a bearish BTC regime a spot-only desk can't short, so longs fight the
     # tide — demand extra ML conviction on top of ML_VOTE_MIN_PROB to open one.
     AUTO_PAPER_BEARISH_ML_EXTRA: float = 0.05
+    # ...and extra predicted win% on top of AUTO_PAPER_MIN_WIN_PCT (same idea,
+    # rule-side; was a hardcoded +15 in auto_trader)
+    AUTO_PAPER_BEARISH_WIN_EXTRA: float = 15.0
     # train ONE model on all scanned coins pooled (features are scale-free
     # ratios) instead of one model per coin: ~20x the training rows makes the
     # per-coin P(up) far less noisy, and one fit is cheaper than twenty.

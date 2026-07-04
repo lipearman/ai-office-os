@@ -10,7 +10,7 @@ from app.models.user import User
 from app.models.watchlist import WatchlistItem
 from app.models.paper import PaperTrade
 from app.models.trading_state import TradingAlert, DeskLLMConfig, AlertWebhook, ScanExclusion
-from app.trading import alert_webhook
+from app.trading import alert_webhook, tuning
 from app.schemas.trading import (
     WatchlistItemOut, WatchlistItemCreate, WatchlistItemUpdate, PaperOpen,
 )
@@ -92,6 +92,63 @@ async def remove_exclusion(
     if res.rowcount == 0:
         raise HTTPException(status_code=404, detail=f"{symbol} ไม่อยู่ใน denylist")
     return {"symbol": symbol.upper(), "status": "removed"}
+
+
+# ── coach + tunings (runtime-tunable params, adjusted from real results) ──
+@router.get("/tunings")
+async def list_tunings(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Effective params (config defaults + coach overrides) + the raw overrides."""
+    from app.models.trading_state import DeskTuning
+    res = await db.execute(select(DeskTuning).order_by(DeskTuning.key))
+    rows = res.scalars().all()
+    return {
+        "effective": await tuning.get_params(db),
+        "bounds": {k: {"min": lo, "max": hi} for k, (lo, hi) in tuning.TUNABLE.items()},
+        "overrides": [
+            {"key": x.key, "value": x.value, "reason": x.reason, "source": x.source,
+             "updated_at": x.updated_at.isoformat() if x.updated_at else None}
+            for x in rows
+        ],
+    }
+
+
+@router.put("/tunings/{key}")
+async def set_tuning(
+    key: str,
+    payload: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Manually override a tunable param (clamped to its bounds, no redeploy)."""
+    key = key.upper()
+    if key not in tuning.TUNABLE:
+        raise HTTPException(status_code=422,
+                            detail=f"ปรับได้เฉพาะ: {', '.join(tuning.TUNABLE)}")
+    try:
+        value = float(payload.get("value"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail="value ต้องเป็นตัวเลข")
+    stored = await tuning.set_param(db, key, value,
+                                    str(payload.get("reason", "ปรับเอง"))[:200],
+                                    source="manual")
+    await db.commit()
+    lo, hi = tuning.TUNABLE[key]
+    return {"key": key, "requested": value, "stored": stored,
+            "clamped": stored != value, "bounds": {"min": lo, "max": hi}}
+
+
+@router.post("/coach/run/workspace/{workspace_id}")
+async def run_coach_now(
+    workspace_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Run one coaching pass immediately (bypasses the weekly stamp)."""
+    from app.trading import coach
+    return await coach.run_coach(db, workspace_id, force=True)
 
 
 # ── single-symbol analysis ──────────────────────────────────────
@@ -329,7 +386,8 @@ async def trading_desk(
         items = [{"symbol": o["symbol"]} for o in opps if o.get("symbol")]
     live_ticker = await desk_store._live_ticker(items)
     # "watch" = coins the ML model likes (P_up high) that have no entry signal yet
-    floor = settings.ML_VOTE_MIN_PROB
+    # (tuned floor — must match the auto-trader's real gate, or "go" lies)
+    floor = (await tuning.get_params(db))["ML_VOTE_MIN_PROB"]
     watch = sorted(
         ({"symbol": o.get("symbol"), "ml_prob": o.get("ml_prob"),
           "win_chance_pct": o.get("win_chance_pct"), "price": o.get("price"),
