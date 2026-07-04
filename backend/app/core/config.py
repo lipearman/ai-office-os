@@ -91,6 +91,13 @@ class Settings(BaseSettings):
     # top-ranked opportunities by score even without a same-day signal (more
     # aggressive; useful for demos / always-in strategies).
     AUTO_PAPER_REQUIRE_SIGNAL: bool = True
+    # time stop: a 4H setup should resolve within days — if neither stop nor
+    # target is hit by then, the setup is stale; free the slot. 0 = off.
+    AUTO_PAPER_MAX_HOLD_HOURS: int = 72
+    # move-to-breakeven: once price runs this many R (initial entry→stop
+    # distance) in our favor, raise the stop to entry + round-trip fees so a
+    # winner can no longer turn into a full loser. 0 = off.
+    AUTO_PAPER_BREAKEVEN_AT_R: float = 1.0
     # per-LLM-call timeout (s) — stops a hung Ollama call from blocking a tick
     LLM_TIMEOUT_SECONDS: float = 30.0
     # overall heavy-tick watchdog (s) — cancel a stuck compute so the next tick

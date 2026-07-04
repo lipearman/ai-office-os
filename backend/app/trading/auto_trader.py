@@ -57,10 +57,14 @@ async def auto_open(db: AsyncSession, workspace_id, opps: list[dict], prices: di
         # ML ensemble gate: when ML is on, only open if the model confirms (P_up
         # >= threshold). The walk-forward test showed the rule+ML ensemble flips a
         # losing rule into positive OOS expectancy by skipping low-conviction trades.
-        # No cached vote yet → don't block (degrade gracefully).
+        # FAIL-CLOSED: a missing vote (expired cache, refresh not run yet) must not
+        # silently drop the gate — that once let in a trade the model scored 36%.
+        # Missing a setup is cheaper than trading against our own model.
         if settings.DESK_ML_VOTE_ENABLED:
             mp = o.get("ml_prob")
-            if mp is not None and mp < settings.ML_VOTE_MIN_PROB:
+            if mp is None or mp < settings.ML_VOTE_MIN_PROB:
+                if mp is None:
+                    log.info("auto_paper.skip_no_ml_vote", symbol=o.get("symbol"))
                 continue
         sym = o["symbol"]
         if sym in open_syms:
@@ -108,15 +112,34 @@ async def auto_close(db: AsyncSession, workspace_id, prices: dict | None = None)
                 cur = None
         if not cur:
             continue
+        # move-to-breakeven: once price has run AUTO_PAPER_BREAKEVEN_AT_R times the
+        # initial risk (entry→stop) in our favor, raise the stop to entry plus the
+        # round-trip fee so this trade can no longer close as a full loser.
+        if (settings.AUTO_PAPER_BREAKEVEN_AT_R and t.stop and t.entry_price
+                and t.stop < t.entry_price):
+            r_dist = t.entry_price - t.stop
+            if cur >= t.entry_price + settings.AUTO_PAPER_BREAKEVEN_AT_R * r_dist:
+                be = t.entry_price * (1 + 2 * (t.fee_pct or 0) / 100)
+                new_stop = min(be, cur)
+                if new_stop > t.stop:
+                    t.stop = new_stop
+                    log.info("auto_paper.breakeven", symbol=t.symbol, stop=round(new_stop, 4))
         reason = None
         if t.stop and cur <= t.stop:
-            reason = "stop"
+            # a stop raised to/above entry is a protected winner, not a loss
+            reason = "breakeven" if t.entry_price and t.stop >= t.entry_price else "stop"
         elif t.target and cur >= t.target:
             reason = "target"
         # catastrophe stop — closes a position bleeding past the max loss even if
         # it has no stop/target (no orphan can fall forever).
         elif t.entry_price and (cur / t.entry_price - 1.0) * 100 <= -settings.AUTO_PAPER_MAX_LOSS_PCT:
             reason = "max_loss"
+        # time stop — a setup that has resolved to neither stop nor target within
+        # the hold budget is stale; close it and free the slot for a fresh one.
+        elif settings.AUTO_PAPER_MAX_HOLD_HOURS and t.entry_at:
+            entered = t.entry_at if t.entry_at.tzinfo else t.entry_at.replace(tzinfo=timezone.utc)
+            if (now - entered).total_seconds() >= settings.AUTO_PAPER_MAX_HOLD_HOURS * 3600:
+                reason = "time"
         if not reason:
             continue
         pnl = close_pnl(t.entry_price, cur, t.size_thb, t.qty)
