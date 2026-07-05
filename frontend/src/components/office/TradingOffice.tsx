@@ -264,7 +264,7 @@ export default function TradingOffice({ officeName }: Props) {
     const routeAlert = (a: Alert) =>
       a.symbol === "_HEALTH" || a.symbol === "_NIGHT" ? "monitor" :
       a.symbol === "_COACH" ? "coach" :
-      a.text?.startsWith("⚠️") ? "risk" :
+      a.text?.startsWith("⚠️") || a.text?.startsWith("🎪") ? "risk" :
       a.text?.startsWith("🆕") ? "news" : "trader";
     const speak = (a: Alert) => {
       setPipelineReports((p) => ({ ...p, [routeAlert(a)]: a.text }));

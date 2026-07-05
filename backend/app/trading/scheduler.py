@@ -133,11 +133,14 @@ async def ml_vote_tick() -> None:
 
 
 async def market_watch_tick() -> None:
-    """Daily: diff Bitkub's official market list — auto-denylist vanished coins."""
+    """Daily: diff Bitkub's official market list — auto-denylist vanished coins —
+    and refresh the 7-day volume baseline (sustained-volume discovery + pump
+    detection both read it)."""
     from app.trading import market_watch
     try:
         async with AsyncSessionLocal() as db:
             await market_watch.sync_market_symbols(db)
+        await market_watch.refresh_volume_baseline()
     except Exception as e:
         log.warning("market_watch_tick_failed", error=str(e))
 

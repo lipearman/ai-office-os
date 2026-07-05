@@ -30,6 +30,27 @@ log = structlog.get_logger()
 
 SYMBOLS_PREV_KEY = "market:symbols:known"     # Redis set of known tradingview symbols
 HEALTH_KIND = "_HEALTH"                       # TradingAlert.symbol marker for health alerts
+VOL7D_KEY = "desk:vol7d"                      # Redis hash: symbol -> median 7d baht volume
+
+
+def median(vals: list[float]) -> float | None:
+    """Plain median (pure). None on empty input."""
+    if not vals:
+        return None
+    s = sorted(vals)
+    n = len(s)
+    return s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2
+
+
+def is_pump(chg24: float | None, vol_ratio: float | None,
+            min_chg: float, min_ratio: float) -> bool:
+    """Pump heuristic (pure): price already ran hard AND volume is a multiple of
+    the coin's own 7-day median — the classic ignition signature. Both parts
+    required: a rally on normal volume is just a rally, and a volume spike
+    without price movement is accumulation/news, not a chase trap."""
+    if chg24 is None or vol_ratio is None:
+        return False
+    return chg24 >= min_chg and vol_ratio >= min_ratio
 
 
 def diff_symbols(known: set[str], current: set[str]) -> tuple[set[str], set[str]]:
@@ -126,6 +147,69 @@ async def sync_market_symbols(db: AsyncSession) -> dict:
               "baselined": not known}
     log.info("market_watch.symbols_synced", **report)
     return report
+
+
+async def refresh_volume_baseline() -> int:
+    """Daily: median 7-day baht volume per THB market → Redis (TTL 3 days).
+
+    This is the anti-manipulation baseline: discovery ranks by SUSTAINED volume
+    (a one-day pump can't fake 7 days of median), and the pump detector compares
+    today's volume against each coin's own normal. A coin with no baseline yet
+    (new/unranked) simply waits a day — the new-market alert covers the gap."""
+    client = BitkubClient()
+    try:
+        ticker = await client.ticker()
+        if not isinstance(ticker, dict):
+            return 0
+        # candidate pool: top ~50 THB pairs by 24h quote volume
+        pool: list[tuple[str, float]] = []
+        for mk, rec in ticker.items():
+            if not (isinstance(mk, str) and mk.startswith("THB_") and isinstance(rec, dict)):
+                continue
+            try:
+                tv = to_tradingview_symbol(mk)
+                vol = float(rec.get("quoteVolume") or 0)
+            except Exception:
+                continue
+            pool.append((tv, vol))
+        pool.sort(key=lambda x: -x[1])
+        pool = pool[:50]
+    except Exception as e:
+        log.warning("vol_baseline.pool_failed", error=str(e))
+        return 0
+
+    out: dict[str, str] = {}
+    for tv, _ in pool:
+        try:
+            candles = await client.fetch_ohlcv(tv, "1D", limit=9)
+            days = candles[:-1][-7:] if len(candles) > 1 else []   # closed days only
+            m = median([float(c.volume or 0) * float(c.close or 0) for c in days])
+            if m:
+                out[tv] = str(round(m, 2))
+        except Exception:
+            continue
+    if out:
+        try:
+            r = await get_redis()
+            await r.delete(VOL7D_KEY)
+            await r.hset(VOL7D_KEY, mapping=out)
+            await r.expire(VOL7D_KEY, 3 * 86400)
+        except Exception as e:
+            log.warning("vol_baseline.store_failed", error=str(e))
+    log.info("vol_baseline.refreshed", coins=len(out))
+    return len(out)
+
+
+async def get_volume_baseline() -> dict[str, float]:
+    """{symbol: median 7d baht volume} — empty when unset/expired (fail-open)."""
+    try:
+        r = await get_redis()
+        raw = await r.hgetall(VOL7D_KEY)
+        return {(k.decode() if isinstance(k, bytes) else k):
+                float(v.decode() if isinstance(v, bytes) else v)
+                for k, v in (raw or {}).items()}
+    except Exception:
+        return {}
 
 
 async def health_check(db: AsyncSession) -> list[str]:

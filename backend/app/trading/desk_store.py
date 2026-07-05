@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import structlog
 from sqlalchemy import select
@@ -212,6 +212,17 @@ async def _discovered_symbols(limit: int, extra_excluded: set[str] | None = None
                 continue
             vol = rec.get("quoteVolume") or rec.get("baseVolume") or 0
             rows.append((tv, float(vol)))
+        # sustained-volume ranking: a coin earns its scan seat with 7 days of
+        # median volume, not one loud day — kills single-day pumps and short
+        # wash-trading bursts at the door. Missing baseline (brand-new coin or
+        # baseline job not run yet) -> rank 0 today; fail-open when the whole
+        # baseline is absent so the desk never goes blind.
+        if settings.DISCOVERY_SUSTAINED_VOLUME:
+            from app.trading.market_watch import get_volume_baseline
+            base = await get_volume_baseline()
+            if base:
+                rows = [(s, base.get(s, 0.0)) for s, _ in rows]
+                rows = [(s, v) for s, v in rows if v > 0]
         rows.sort(key=lambda r: -r[1])
         return [s for s, _ in rows[:limit]]
     except Exception:
@@ -331,6 +342,22 @@ async def get_snapshot(db: AsyncSession, workspace_id) -> DeskSnapshot | None:
         select(DeskSnapshot).where(DeskSnapshot.workspace_id == workspace_id)
     )
     return res.scalar_one_or_none()
+
+
+async def _recent_alert_exists_local(db: AsyncSession, symbol: str,
+                                     text_prefix: str, hours: int = 48) -> bool:
+    """True when the same kind of alert for this symbol exists recently (dedupe
+    for DB alerts — Telegram has its own Redis dedupe)."""
+    from sqlalchemy import and_
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+    res = await db.execute(
+        select(TradingAlert.id).where(and_(
+            TradingAlert.symbol == symbol[:30],
+            TradingAlert.created_at >= cutoff,
+            TradingAlert.text.like(f"{text_prefix}%"),
+        )).limit(1)
+    )
+    return res.first() is not None
 
 
 async def _notify_market_events(opps: list[dict], news_agg: dict) -> None:
@@ -611,6 +638,27 @@ async def compute_full(db: AsyncSession, workspace_id, force_graph: bool = False
                                   tier=2, dedupe_key="earlyturn:off", dedupe_ttl=43200)
         except Exception as e:
             log.warning("early_turn_failed", error=str(e))
+
+    # pump detector: price ran hard AND volume is a multiple of the coin's own
+    # 7d median -> flag it loudly (alert + Risk speaks + Telegram). Detection
+    # only — nothing in the scan/auto-trader will chase it either way.
+    try:
+        from app.trading.market_watch import get_volume_baseline, is_pump
+        from app.trading import notify
+        vol_base = await get_volume_baseline()
+        for sym, t in (ticker or {}).items():
+            if not (isinstance(t, dict) and vol_base.get(sym)):
+                continue
+            ratio = (t.get("v") or 0) * (t.get("p") or 0) / vol_base[sym]
+            if is_pump(t.get("c"), ratio, settings.RADAR_PUMP_MAX_24H_CHG,
+                       settings.PUMP_ALERT_VOL_RATIO):
+                text = notify.fmt_pump(sym, t["c"], ratio)
+                if not await _recent_alert_exists_local(db, sym, "🎪"):
+                    db.add(TradingAlert(workspace_id=workspace_id, symbol=sym,
+                                        text=text[:300]))
+                await notify.send(text, tier=2, dedupe_key=f"pump:{sym}", dedupe_ttl=172800)
+    except Exception as e:
+        log.warning("pump_detect_failed", error=str(e))
 
     meta = {"opps": opps, "stats": stats, "news_agg": news_agg, "prices": prices,
             "ticker": ticker,

@@ -131,6 +131,15 @@ class Settings(BaseSettings):
     # WARN% and MAX% the radar still pings but carries an explicit warning.
     RADAR_PUMP_MAX_24H_CHG: float = 20.0
     RADAR_WARN_24H_CHG: float = 10.0
+    # sustained-volume discovery: rank scan candidates by their MEDIAN 7-day baht
+    # volume (refreshed daily) instead of raw 24h volume — a one-day pump or a
+    # short wash-trading burst can no longer buy its way into the scan. Coins
+    # without a baseline yet (listed yesterday) wait one day.
+    DISCOVERY_SUSTAINED_VOLUME: bool = True
+    # pump detector: price already ran >= RADAR_PUMP_MAX_24H_CHG AND 24h volume
+    # is this multiple of the coin's own 7d median -> flag as a probable pump
+    # (alert only — the scan/auto-trader never chases it either way)
+    PUMP_ALERT_VOL_RATIO: float = 4.0
     # auto paper-trading: worker opens trades on fresh setups + closes on
     # stop/target. OFF by default (turning it on lets the worker trade on its own).
     AUTO_PAPER_ENABLED: bool = False

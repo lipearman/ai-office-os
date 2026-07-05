@@ -178,6 +178,12 @@ def fmt_news(asset: str, sentiment: float, label: str, count: int, headline: str
     return (f"📰 ข่าวแรง {ico} {asset} ({label}, {count} ชิ้น)\n{headline}")
 
 
+def fmt_pump(symbol: str, chg24: float, vol_ratio: float) -> str:
+    return (f"🎪 คาดว่าเป็นสัญญาณปั่น (pump) — {symbol}\n"
+            f"ราคา {chg24:+.0f}% ใน 24 ชม. บน volume {vol_ratio:.1f}x ของค่ากลาง 7 วันตัวเอง\n"
+            f"ระบบไม่ไล่ให้แน่นอน ถ้าคิดจะเก็งเอง: คุณกำลังเล่นกับคนที่รู้เวลาเทล่วงหน้า")
+
+
 def fmt_early_turn(breadth_pct: int, news_sent: float) -> str:
     return (f"🌅 สัญญาณกลับตัวระยะแรก\n"
             f"ตลาดเขียวต่อเนื่อง ~{breadth_pct}% ของกระดาน + ข่าวโทนบวก ({news_sent:+.2f}) "
