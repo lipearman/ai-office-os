@@ -140,6 +140,16 @@ async def set_tuning(
             "clamped": stored != value, "bounds": {"min": lo, "max": hi}}
 
 
+@router.post("/notify/test")
+async def notify_test(current_user: User = Depends(get_current_user)):
+    """Send a test message to the configured Telegram chat (no dedupe)."""
+    from app.trading import notify
+    configured = bool(settings.TELEGRAM_BOT_TOKEN)
+    sent = await notify.send("🔔 ทดสอบจากหน้า /trading — ระบบแจ้งเตือนทำงานปกติ",
+                             tier=1) if configured else False
+    return {"configured": configured, "sent": sent}
+
+
 @router.post("/coach/run/workspace/{workspace_id}")
 async def run_coach_now(
     workspace_id: uuid.UUID,
