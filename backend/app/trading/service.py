@@ -301,6 +301,15 @@ def market_breadth(ticker: dict) -> float | None:
     return round(sum(1 for c in chg if c > 0) / len(chg), 3)
 
 
+def filter_pumped(ranked: list[tuple[str, float]], chg24: dict[str, float],
+                  max_chg: float) -> list[tuple[str, float]]:
+    """Drop coins that already ran >= max_chg% in 24h from the ML-radar ranking.
+
+    Pure — unit-tested. A missing 24h figure keeps the coin (fail-open: the
+    guard exists to stop chases, not to hide data gaps)."""
+    return [(s, p) for s, p in ranked if chg24.get(s, 0.0) < max_chg]
+
+
 def is_early_turn(structural_bearish: bool, breadth_ema: float | None,
                   news_sentiment: float | None, threshold: float) -> bool:
     """Early-turn = structure still bearish BUT breadth holds above threshold and
@@ -312,11 +321,14 @@ def is_early_turn(structural_bearish: bool, breadth_ema: float | None,
 
 
 async def daily_opportunities(items: list[dict], concurrency: int = 4,
-                              ml_votes: dict | None = None) -> list[dict]:
+                              ml_votes: dict | None = None,
+                              default_tf: str = "1H") -> list[dict]:
     """Evaluate each watchlist item (symbol + assigned cfg) → ranked by score.
 
     `ml_votes` = {symbol: P(up)} cached by the background ML job; passed through
-    so the rule signal gets an ML confirm/veto without training inline."""
+    so the rule signal gets an ML confirm/veto without training inline.
+    `default_tf` = the scan timeframe for coins without a per-coin cfg —
+    runtime-tunable (DESK_SCAN_TIMEFRAME)."""
     client = BitkubClient()
     regime = await market_regime(client)          # market-wide bias, computed once
     votes = ml_votes or {}
@@ -326,6 +338,7 @@ async def daily_opportunities(items: list[dict], concurrency: int = 4,
         async with sem:
             try:
                 return await daily_opportunity(client, it["symbol"], it.get("cfg"),
+                                               default_tf=default_tf,
                                                regime=regime, ml_prob=votes.get(it["symbol"]))
             except Exception:
                 # a single bad/illiquid symbol (esp. from market discovery) must

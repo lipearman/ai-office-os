@@ -104,6 +104,16 @@ def test_clamp_keeps_every_param_inside_bounds():
         assert clamp(key, mid) == mid
 
 
+def test_enum_param_validation():
+    from app.trading.tuning import TUNABLE_ENUM, validate_enum
+    assert "DESK_SCAN_TIMEFRAME" in TUNABLE_ENUM
+    assert validate_enum("DESK_SCAN_TIMEFRAME", "4h") == "4H"      # case-insensitive
+    assert validate_enum("DESK_SCAN_TIMEFRAME", "1D") == "1D"
+    assert validate_enum("DESK_SCAN_TIMEFRAME", "7M") == "1H"      # invalid -> fallback
+    # the scan heartbeat must never be coach-adjustable (weekly flip = chaos)
+    assert "DESK_SCAN_TIMEFRAME" not in COACH_ADJUSTABLE
+
+
 def test_coach_whitelist_excludes_switches():
     # the coach must never be able to flip the game on/off or resize positions —
     # those knobs belong to the human / night-shift analyst

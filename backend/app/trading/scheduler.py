@@ -163,6 +163,22 @@ async def coach_tick() -> None:
         log.warning("coach_tick_failed", error=str(e))
 
 
+async def tf_tuner_tick() -> None:
+    """Periodic check; the per-coin TF scan runs at most once per its interval."""
+    from app.trading import tf_tuner
+    try:
+        async with AsyncSessionLocal() as db:
+            for ws in await _workspaces_with_snapshot():
+                await asyncio.wait_for(
+                    tf_tuner.run_tf_scan(db, ws),
+                    timeout=settings.TF_TUNER_TIMEOUT_SECONDS,
+                )
+    except asyncio.TimeoutError:
+        log.warning("tf_tuner_tick_timeout")
+    except Exception as e:
+        log.warning("tf_tuner_tick_failed", error=str(e))
+
+
 async def fast_tick() -> None:
     """Cheap price-only refresh of every workspace that already has a snapshot."""
     try:
@@ -214,6 +230,12 @@ def start_scheduler() -> None:
                            seconds=settings.COACH_CHECK_SECONDS,
                            id="desk_coach", max_instances=1, coalesce=True)
         _scheduler.add_job(coach_tick, id="desk_coach_boot")
+    # per-coin timeframe map — weekly heavy backtest scan, checked 6-hourly
+    if settings.PER_COIN_TF_ENABLED:
+        _scheduler.add_job(tf_tuner_tick, "interval",
+                           seconds=settings.TF_TUNER_CHECK_SECONDS,
+                           id="tf_tuner", max_instances=1, coalesce=True)
+        _scheduler.add_job(tf_tuner_tick, id="tf_tuner_boot")
     _scheduler.start()
     log.info("trading.scheduler.started", heavy_seconds=HEAVY_SECONDS, fast_seconds=FAST_SECONDS,
              pipeline_auto=settings.DESK_GRAPH_AUTO,

@@ -87,6 +87,9 @@ class DeskTuning(Base, UUIDMixin, TimestampMixin):
 
     key: Mapped[str] = mapped_column(String(50), nullable=False, unique=True, index=True)
     value: Mapped[float] = mapped_column(Float, nullable=False)
+    # enum-typed params (e.g. DESK_SCAN_TIMEFRAME) store their choice here and
+    # keep `value` at 0.0 — numeric params leave this NULL
+    text_value: Mapped[str | None] = mapped_column(String(20), nullable=True)
     reason: Mapped[str] = mapped_column(String(200), default="")
     source: Mapped[str] = mapped_column(String(20), default="coach")  # coach | manual
 

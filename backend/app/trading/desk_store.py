@@ -143,7 +143,9 @@ from app.models.paper import PaperTrade
 from app.models.trading_state import DeskSnapshot, TradingAlert, DeskLLMConfig, AlertWebhook
 from app.models.agent import Agent
 from app.trading import alert_webhook
-from app.trading.service import daily_opportunities, build_desk, market_breadth, is_early_turn
+from app.trading.service import (
+    daily_opportunities, build_desk, market_breadth, is_early_turn, filter_pumped,
+)
 from app.trading.paper import unrealized, paper_stats
 from app.trading.news import fetch_news, aggregate_sentiment
 from app.trading.bitkub import BitkubClient, to_market_symbol, to_tradingview_symbol
@@ -239,6 +241,16 @@ async def watchlist_plus_discovered(db: AsyncSession, workspace_id) -> list[dict
         discovered = await _discovered_symbols(top_n, excluded)
         items = items + [{"symbol": s, "cfg": None, "discovered": True}
                          for s in discovered if s not in wl]
+    # per-coin timeframe map (weekly tf_tuner): a coin with a PROVEN better
+    # heartbeat gets it here — the single funnel every consumer (signal scan,
+    # ML training, pipeline) passes through, so all layers stay on one clock.
+    if settings.PER_COIN_TF_ENABLED and items:
+        from app.trading.tf_tuner import get_tf_map
+        tf_map = await get_tf_map()
+        if tf_map:
+            for it in items:
+                if not (it.get("cfg") or {}).get("timeframe") and it["symbol"] in tf_map:
+                    it["cfg"] = {**(it.get("cfg") or {}), "timeframe": tf_map[it["symbol"]]}
     return items
 
 
@@ -358,7 +370,10 @@ async def compute_full(db: AsyncSession, workspace_id, force_graph: bool = False
     items = await watchlist_plus_discovered(db, workspace_id)
     ml_votes = (await get_ml_votes([it["symbol"] for it in items])
                 if (items and settings.DESK_ML_VOTE_ENABLED) else {})
-    opps = await daily_opportunities(items, ml_votes=ml_votes) if items else []
+    from app.trading import tuning
+    scan_tf = str((await tuning.get_params(db))["DESK_SCAN_TIMEFRAME"])
+    opps = (await daily_opportunities(items, ml_votes=ml_votes, default_tf=scan_tf)
+            if items else [])
     prices = await _live_prices(items)
     positions = await _positions(db, workspace_id, prices)
     stats = await _stats(db, workspace_id)
@@ -652,7 +667,10 @@ async def run_pipeline_only(db: AsyncSession, workspace_id) -> str:
         items = await watchlist_plus_discovered(db, workspace_id)
         ml_votes = (await get_ml_votes([it["symbol"] for it in items])
                     if (items and settings.DESK_ML_VOTE_ENABLED) else {})
-        opps = await daily_opportunities(items, ml_votes=ml_votes) if items else []
+        from app.trading import tuning
+        scan_tf = str((await tuning.get_params(db))["DESK_SCAN_TIMEFRAME"])
+        opps = (await daily_opportunities(items, ml_votes=ml_votes, default_tf=scan_tf)
+                if items else [])
         if not opps:
             return "no_opps"
         prices = await _live_prices(items)
@@ -739,10 +757,14 @@ async def refresh_ml_votes(db: AsyncSession, workspace_id) -> int:
             return 0
         client = BitkubClient()
         rr = r or await get_redis()
+        from app.trading import tuning
+        scan_tf = str((await tuning.get_params(db))["DESK_SCAN_TIMEFRAME"])
         candle_sets: dict[str, list] = {}
         for it in items:
             sym = it["symbol"]
-            tf = (it.get("cfg") or {}).get("timeframe") or "1H"
+            # ML must train on the SAME timeframe the signal scan reads,
+            # or the vote confirms a different game than the one being played
+            tf = (it.get("cfg") or {}).get("timeframe") or scan_tf
             try:
                 candle_sets[sym] = await client.fetch_ohlcv(sym, tf, limit=1500)
             except Exception:
@@ -815,7 +837,25 @@ async def reconcile_auto_watchlist(db: AsyncSession, workspace_id, votes: dict[s
     tp = await tuning.get_params(db)
     floor = tp["ML_VOTE_MIN_PROB"]
     ranked = sorted(((s, p) for s, p in votes.items() if p >= floor), key=lambda x: -x[1])
-    desired = [s for s, _ in ranked[: int(tp["AUTO_WATCHLIST_TOP_N"])]]
+    # pump guard: momentum features make the pooled ML love a coin right AFTER
+    # it already ran (EPIC: +32% pump -> ML 0.55 -> radar ping mid-dump). Coins
+    # up >= RADAR_PUMP_MAX_24H_CHG in 24h drop out of `desired`, so they never
+    # auto-pin or ping — and an earlier-pinned pump prunes itself next pass.
+    chg24: dict[str, float] = {}
+    try:
+        tkr = await BitkubClient().ticker()
+        if isinstance(tkr, dict):
+            for s, _ in ranked:
+                rec = tkr.get(to_market_symbol(s))
+                if isinstance(rec, dict) and rec.get("percentChange") is not None:
+                    chg24[s] = float(rec["percentChange"])
+    except Exception:
+        pass
+    guarded = filter_pumped(ranked, chg24, settings.RADAR_PUMP_MAX_24H_CHG)
+    if len(guarded) < len(ranked):
+        log.info("auto_watchlist.pump_guard",
+                 skipped=[s for s, _ in ranked if s not in {g for g, _ in guarded}])
+    desired = [s for s, _ in guarded[: int(tp["AUTO_WATCHLIST_TOP_N"])]]
 
     res = await db.execute(select(WatchlistItem).where(WatchlistItem.workspace_id == workspace_id))
     current = {w.symbol: w for w in res.scalars().all()}
@@ -847,11 +887,12 @@ async def reconcile_auto_watchlist(db: AsyncSession, workspace_id, votes: dict[s
         log.info("auto_watchlist_reconciled", workspace=str(workspace_id),
                  added=to_add, removed=to_remove)
     # Telegram tier 2: a coin crossing the ML bar onto the radar is worth a ping
+    # (with its 24h move attached, so a reader can spot a late entry instantly)
     for s in to_add:
         try:
             from app.trading import notify
-            await notify.send(notify.fmt_radar(s, votes.get(s, 0.0)), tier=2,
-                              dedupe_key=f"radar:{s}")
+            await notify.send(notify.fmt_radar(s, votes.get(s, 0.0), chg24.get(s)),
+                              tier=2, dedupe_key=f"radar:{s}")
         except Exception:
             pass
 

@@ -75,6 +75,19 @@ class Settings(BaseSettings):
     # of the watchlist, so movers surface automatically. 0 / False = watchlist only.
     DESK_SCAN_ENABLED: bool = True
     DESK_SCAN_TOP_N: int = 20
+    # the scan/signal timeframe for discovered coins (watchlist items may still
+    # override per coin via cfg). Runtime-tunable (enum) — see tuning.TUNABLE_ENUM.
+    DESK_SCAN_TIMEFRAME: str = "1H"
+    # per-coin timeframe tuner: coins provably win on different heartbeats (the
+    # 8x3 matrix: ADA on 15M, SOL on 4H, NEAR/XRP on 1H). A weekly backtest scan
+    # assigns a coin its own TF only when PF/trades/return clear the bars below —
+    # everything else stays on DESK_SCAN_TIMEFRAME (anti-overfit fallback).
+    PER_COIN_TF_ENABLED: bool = True
+    TF_TUNER_MIN_TRADES: int = 5
+    TF_TUNER_MIN_PF: float = 1.2
+    TF_TUNER_INTERVAL_SECONDS: int = 604800         # rebuild the map weekly
+    TF_TUNER_CHECK_SECONDS: int = 21600             # how often the tick checks if due
+    TF_TUNER_TIMEOUT_SECONDS: int = 900             # ~60 backtests watchdog
     # delisting denylist: Bitkub's public ticker has NO delisting flag, and a coin
     # flagged for delisting (DE) often shows a volume SPIKE as holders dump it — so
     # volume-ranked discovery happily surfaces a coin you can't actually hold. Drop
@@ -111,6 +124,13 @@ class Settings(BaseSettings):
     REGIME_TURN_ENABLED: bool = True
     REGIME_TURN_BREADTH: float = 0.6                # smoothed breadth >= this
     REGIME_TURN_EMA_ALPHA: float = 0.1              # per heavy tick (~1h to converge)
+    # pump guard: the pooled ML reads momentum features, so a thin coin that
+    # already ran hard looks attractive AFTER the party (EPIC pumped +32% then
+    # dumped -40%; the radar pinged mid-dump). A coin up more than MAX% in 24h
+    # is a chase, not a setup: it neither auto-pins nor pings the radar. Between
+    # WARN% and MAX% the radar still pings but carries an explicit warning.
+    RADAR_PUMP_MAX_24H_CHG: float = 20.0
+    RADAR_WARN_24H_CHG: float = 10.0
     # auto paper-trading: worker opens trades on fresh setups + closes on
     # stop/target. OFF by default (turning it on lets the worker trade on its own).
     AUTO_PAPER_ENABLED: bool = False

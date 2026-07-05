@@ -106,9 +106,13 @@ async def list_tunings(
     rows = res.scalars().all()
     return {
         "effective": await tuning.get_params(db),
-        "bounds": {k: {"min": lo, "max": hi} for k, (lo, hi) in tuning.TUNABLE.items()},
+        "bounds": {
+            **{k: {"min": lo, "max": hi} for k, (lo, hi) in tuning.TUNABLE.items()},
+            **{k: {"options": list(v)} for k, v in tuning.TUNABLE_ENUM.items()},
+        },
         "overrides": [
-            {"key": x.key, "value": x.value, "reason": x.reason, "source": x.source,
+            {"key": x.key, "value": x.text_value if x.text_value else x.value,
+             "reason": x.reason, "source": x.source,
              "updated_at": x.updated_at.isoformat() if x.updated_at else None}
             for x in rows
         ],
@@ -124,20 +128,27 @@ async def set_tuning(
 ):
     """Manually override a tunable param (clamped to its bounds, no redeploy)."""
     key = key.upper()
-    if key not in tuning.TUNABLE:
+    if key in tuning.TUNABLE:
+        try:
+            value: float | str = float(payload.get("value"))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=422, detail="value ต้องเป็นตัวเลข")
+        bounds: dict = dict(zip(("min", "max"), tuning.TUNABLE[key]))
+    elif key in tuning.TUNABLE_ENUM:
+        value = str(payload.get("value", ""))
+        bounds = {"options": list(tuning.TUNABLE_ENUM[key])}
+    else:
         raise HTTPException(status_code=422,
-                            detail=f"ปรับได้เฉพาะ: {', '.join(tuning.TUNABLE)}")
+                            detail=f"ปรับได้เฉพาะ: {', '.join([*tuning.TUNABLE, *tuning.TUNABLE_ENUM])}")
     try:
-        value = float(payload.get("value"))
-    except (TypeError, ValueError):
-        raise HTTPException(status_code=422, detail="value ต้องเป็นตัวเลข")
-    stored = await tuning.set_param(db, key, value,
-                                    str(payload.get("reason", "ปรับเอง"))[:200],
-                                    source="manual")
+        stored = await tuning.set_param(db, key, value,
+                                        str(payload.get("reason", "ปรับเอง"))[:200],
+                                        source="manual")
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
     await db.commit()
-    lo, hi = tuning.TUNABLE[key]
     return {"key": key, "requested": value, "stored": stored,
-            "clamped": stored != value, "bounds": {"min": lo, "max": hi}}
+            "clamped": stored != value, "bounds": bounds}
 
 
 @router.post("/notify/test")

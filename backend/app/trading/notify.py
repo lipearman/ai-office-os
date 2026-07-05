@@ -156,9 +156,13 @@ def fmt_breakeven(symbol: str, new_stop: float) -> str:
             f"ราคาวิ่ง +1R แล้ว เลื่อน stop มาที่ {new_stop} — ไม้นี้แพ้ไม่ได้อีกแล้ว")
 
 
-def fmt_radar(symbol: str, ml_prob: float) -> str:
-    return (f"🟡 เข้าเรดาร์ — {symbol}\n"
-            f"ML เห็นโอกาสขึ้น {ml_prob:.0%} (ยังไม่มีสัญญาณเข้า — จับตา)")
+def fmt_radar(symbol: str, ml_prob: float, chg24: float | None = None) -> str:
+    lines = [f"🟡 เข้าเรดาร์ — {symbol}",
+             f"ML เห็นโอกาสขึ้น {ml_prob:.0%} (ยังไม่มีสัญญาณเข้า — จับตา)"]
+    if chg24 is not None:
+        warn = " ⚠️ วิ่งมาแล้ว — อย่าไล่ราคา" if chg24 >= settings.RADAR_WARN_24H_CHG else ""
+        lines.append(f"ราคา 24 ชม.: {chg24:+.1f}%{warn}")
+    return "\n".join(lines)
 
 
 def fmt_regime(old: str, new: str) -> str:

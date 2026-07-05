@@ -116,9 +116,9 @@ export default function TradingPage() {
 
   // ── runtime tunings (coach/night/manual adjustable params) ──
   type Tunings = {
-    effective: Record<string, number>;
-    bounds: Record<string, { min: number; max: number }>;
-    overrides: { key: string; value: number; reason: string; source: string; updated_at: string | null }[];
+    effective: Record<string, number | string>;
+    bounds: Record<string, { min?: number; max?: number; options?: string[] }>;
+    overrides: { key: string; value: number | string; reason: string; source: string; updated_at: string | null }[];
   };
   const [tunings, setTunings] = useState<Tunings | null>(null);
   const [tuneEdit, setTuneEdit] = useState<{ key: string; value: string } | null>(null);
@@ -129,7 +129,10 @@ export default function TradingPage() {
   const saveTuning = async () => {
     if (!tuneEdit) return;
     try {
-      await api.put(`/trading/tunings/${tuneEdit.key}`, { value: parseFloat(tuneEdit.value), reason: "ปรับเองจากหน้า /trading" });
+      // enum params (e.g. DESK_SCAN_TIMEFRAME=4H) send the raw string
+      const num = parseFloat(tuneEdit.value);
+      const value = Number.isNaN(num) ? tuneEdit.value.trim().toUpperCase() : num;
+      await api.put(`/trading/tunings/${tuneEdit.key}`, { value, reason: "ปรับเองจากหน้า /trading" });
       setTuneEdit(null);
       loadTunings();
     } catch (e: any) {
@@ -622,7 +625,8 @@ export default function TradingPage() {
               const editing = tuneEdit?.key === k;
               return (
                 <div key={k} className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5"
-                  title={ov ? `${ov.source}: ${ov.reason}` : `ค่าตั้งต้นจาก config · กรอบ ${b?.min}–${b?.max}`}>
+                  title={ov ? `${ov.source}: ${ov.reason}`
+                            : `ค่าตั้งต้นจาก config · ${b?.options ? `ตัวเลือก ${b.options.join("/")}` : `กรอบ ${b?.min}–${b?.max}`}`}>
                   <p className="truncate text-[9px] text-white/40">{k.replace("AUTO_PAPER_", "").replace("ML_VOTE_", "ML_")}</p>
                   {editing ? (
                     <span className="flex items-center gap-1">

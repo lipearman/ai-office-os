@@ -43,6 +43,23 @@ TUNABLE: dict[str, tuple[float, float]] = {
     "AUTO_PAPER_REQUIRE_SIGNAL":   (0.0, 1.0),
 }
 
+# enum-typed params: value must be one of the listed choices (first = the
+# conservative fallback used when a stored value goes stale/invalid)
+TUNABLE_ENUM: dict[str, tuple[str, ...]] = {
+    # the scan/signal timeframe — the game's heartbeat. Changing it re-frames
+    # every downstream layer (ML training window, signal cadence, time stop),
+    # so only the human / night shift may change it, with backtest evidence.
+    "DESK_SCAN_TIMEFRAME": ("1H", "15M", "4H", "1D"),
+}
+
+
+def validate_enum(key: str, value: str) -> str:
+    """Return the stored choice for an enum param (fallback: first option)."""
+    opts = TUNABLE_ENUM[key]
+    v = str(value).strip().upper()
+    return v if v in opts else opts[0]
+
+
 # the WEEKLY COACH may only turn risk knobs — never the on/off switches
 # (those belong to the human and, in emergencies, the night-shift analyst)
 COACH_ADJUSTABLE = {
@@ -51,7 +68,7 @@ COACH_ADJUSTABLE = {
     "AUTO_PAPER_BREAKEVEN_AT_R", "AUTO_PAPER_MAX_LOSS_PCT",
 }
 
-_cache: dict[str, float] = {}
+_cache: dict = {}
 _cache_at: float = 0.0
 _CACHE_TTL = 30.0
 
@@ -61,12 +78,15 @@ def clamp(key: str, value: float) -> float:
     return max(lo, min(hi, float(value)))
 
 
-def _defaults() -> dict[str, float]:
-    return {k: float(getattr(settings, k)) for k in TUNABLE}
+def _defaults() -> dict:
+    out: dict = {k: float(getattr(settings, k)) for k in TUNABLE}
+    out.update({k: validate_enum(k, getattr(settings, k)) for k in TUNABLE_ENUM})
+    return out
 
 
-async def get_params(db: AsyncSession) -> dict[str, float]:
-    """Effective params: config defaults overridden by (clamped) DB rows."""
+async def get_params(db: AsyncSession) -> dict:
+    """Effective params (floats + enum strings): config defaults overridden by
+    validated DB rows."""
     global _cache, _cache_at
     now = time.monotonic()
     if _cache and now - _cache_at < _CACHE_TTL:
@@ -77,29 +97,43 @@ async def get_params(db: AsyncSession) -> dict[str, float]:
         for row in res.scalars().all():
             if row.key in TUNABLE and row.value is not None:
                 out[row.key] = clamp(row.key, row.value)
+            elif row.key in TUNABLE_ENUM and row.text_value:
+                out[row.key] = validate_enum(row.key, row.text_value)
     except Exception as e:                      # table missing mid-migration etc.
         log.warning("tuning.read_failed", error=str(e))
     _cache, _cache_at = dict(out), now
     return out
 
 
-async def set_param(db: AsyncSession, key: str, value: float, reason: str,
-                    source: str = "coach") -> float:
-    """Upsert one override (clamped). Returns the value actually stored."""
-    if key not in TUNABLE:
+async def set_param(db: AsyncSession, key: str, value, reason: str,
+                    source: str = "coach"):
+    """Upsert one override (clamped floats / validated enums). Returns what
+    was actually stored."""
+    if key in TUNABLE:
+        stored: float | str = clamp(key, value)
+    elif key in TUNABLE_ENUM:
+        v = validate_enum(key, value)
+        if v != str(value).strip().upper():
+            raise ValueError(f"{key} ต้องเป็นหนึ่งใน {', '.join(TUNABLE_ENUM[key])}")
+        stored = v
+    else:
         raise ValueError(f"{key} is not tunable")
-    val = clamp(key, value)
     res = await db.execute(select(DeskTuning).where(DeskTuning.key == key))
     row = res.scalar_one_or_none()
-    if row:
-        row.value = val
-        row.reason = reason[:200]
-        row.source = source
+    if row is None:
+        row = DeskTuning(key=key, value=0.0)
+        db.add(row)
+    if key in TUNABLE_ENUM:
+        row.text_value = str(stored)
+        row.value = 0.0
     else:
-        db.add(DeskTuning(key=key, value=val, reason=reason[:200], source=source))
+        row.value = float(stored)
+        row.text_value = None
+    row.reason = reason[:200]
+    row.source = source
     invalidate_cache()
-    log.info("tuning.set", key=key, value=val, reason=reason, source=source)
-    return val
+    log.info("tuning.set", key=key, value=stored, reason=reason, source=source)
+    return stored
 
 
 def invalidate_cache() -> None:
