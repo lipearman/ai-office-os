@@ -592,19 +592,6 @@ async def trigger_meeting(
 
 
 # ── desk chat (ask questions about pipeline data) ──────────────
-_CHAT_SYSTEM = """คุณคือทีมวิเคราะห์การเทรดคริปโตที่มีสมาชิก 7 คน:
-- 📊 Market Analyst: วิเคราะห์แนวโน้มตลาด แนวรับแนวต้าน
-- 📰 News & Sentiment: วิเคราะห์ข่าวและ sentiment
-- 🤖 Trader: วิเคราะห์จุดเข้าซื้อ/ขาย
-- 🛡️ Risk Officer: ประเมินความเสี่ยง
-- 🎯 Coach: ให้คำแนะนำเชิงกลยุทธ์
-- 📉 Model Monitor: วิเคราะห์โอกาสเหรียญ
-- 🔍 Execution Reviewer: ตรวจสอบประสิทธิภาพ
-
-เมื่อมีคำถามจากผู้ใช้ ให้ทุกคนช่วยกันตอบโดยใช้ข้อมูลที่มี แต่ละคนแสดงความเห็นตามบทบาทของตน
-ตอบสั้น กระชับ เป็นธรรมชาติ ภาษาไทย"""
-
-
 @router.post("/desk/workspace/{workspace_id}/chat")
 async def desk_chat(
     workspace_id: uuid.UUID,
@@ -612,77 +599,16 @@ async def desk_chat(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Answer user questions about pipeline data using all agent personas."""
-    from langchain_core.messages import SystemMessage, HumanMessage
-    from app.agents.llm import get_llm
-    from app.trading.desk_store import get_snapshot, _watchlist_items, _live_ticker
+    """Answer user questions about pipeline data using all agent personas.
+
+    Shares the same brain as the Telegram bot (app.trading.desk_chat)."""
+    from app.trading import desk_chat as chat
 
     message = (payload.get("message") or "").strip()
     if not message:
         raise HTTPException(status_code=400, detail="message is required")
-
-    snap = await get_snapshot(db, workspace_id)
-    if snap is None:
-        raise HTTPException(status_code=404, detail="No snapshot yet")
-
-    meta = snap.meta or {}
-    characters = snap.characters or []
-
-    # build context
-    ctx_lines = ["ข้อมูลล่าสุดจาก Pipeline:"]
-    prices = meta.get("prices", {})
-    if prices:
-        ctx_lines.append("ราคา:")
-        for sym, p in sorted(prices.items()):
-            ctx_lines.append(f"  {sym}: {p:,.2f}")
-
-    ticker = meta.get("ticker", {})
-    if ticker:
-        ctx_lines.append("เปลี่ยนแปลง:")
-        for sym, t in sorted(ticker.items()):
-            chg = t.get("c", 0)
-            ctx_lines.append(f"  {sym}: {'+' if chg >= 0 else ''}{chg:.2f}%")
-
-    opps = meta.get("opps", [])
-    if opps:
-        ctx_lines.append("โอกาสวันนี้:")
-        for o in opps[:5]:
-            ctx_lines.append(f"  {o.get('symbol', '?')}: {o.get('strategy', '?')} win={o.get('win_chance_pct', 0)}%")
-
-    news = meta.get("news_agg", {})
-    assets = news.get("assets", [])
-    if assets:
-        ctx_lines.append("Sentiment:")
-        for a in assets[:3]:
-            ctx_lines.append(f"  {a.get('asset', '?')}: bullish={a.get('bullish', 0)} bearish={a.get('bearish', 0)}")
-
-    stats = meta.get("stats", {})
-    if stats:
-        ctx_lines.append(
-            f"สถิติ: win={stats.get('win_rate', 0):.1f}% "
-            f"profit={stats.get('total_pnl_thb', 0):,.0f} THB "
-            f"trades={stats.get('total_trades', 0)}"
-        )
-
-    ctx_lines.append("ข้อเท็จจริงของสมาชิก:")
-    for c in characters:
-        msg = c.get("message", "")
-        if msg:
-            ctx_lines.append(f"  {c.get('name', c.get('key', '?'))}: {msg}")
-
-    context = "\n".join(ctx_lines)
-
-    try:
-        llm = get_llm()
-        resp = await llm.ainvoke([
-            SystemMessage(content=_CHAT_SYSTEM),
-            HumanMessage(content=f"ข้อมูล Pipeline:\n{context}\n\nคำถามผู้ใช้:\n{message}"),
-        ])
-        answer = resp.content if isinstance(resp.content, str) else str(resp.content)
-    except Exception as e:
-        answer = f"ขออภัย ไม่สามารถตอบได้ในตอนนี้: {str(e)}"
-
-    return {"response": answer, "context": context}
+    answer = await chat.answer(db, workspace_id, message)
+    return {"response": answer}
 @router.get("/desk/pipeline/status")
 async def pipeline_status():
     """Check if the background scheduler + realtime subscriber are running."""

@@ -32,7 +32,18 @@ async def lifespan(app: FastAPI):
         start_realtime()
     except Exception as e:
         log.warning("desk_realtime_start_failed", error=str(e))
+    # two-way Telegram (read-only Q&A) — only if a bot token is configured
+    try:
+        from app.trading.telegram_bot import start_bot
+        start_bot()
+    except Exception as e:
+        log.warning("telegram_bot_start_failed", error=str(e))
     yield
+    try:
+        from app.trading.telegram_bot import stop_bot
+        await stop_bot()
+    except Exception:
+        pass
     try:
         from app.trading.realtime import stop_realtime
         await stop_realtime()
