@@ -1,7 +1,7 @@
 "use client";
 
 // Daily Trading Intelligence — scanner, opportunities, backtest/optimizer/ML, paper trading
-import { useEffect, useMemo, useState, useRef } from "react";
+import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import api from "@/lib/api";
 import { useWorkspaceStore } from "@/store/workspace";
 import {
@@ -70,6 +70,9 @@ export default function TradingPage() {
   const [mlResult, setMlResult]   = useState<any>(null);
   const [mlLoading, setMlLoading] = useState(false);
 
+  // ── game summary (regime + signals + ML view, worker-computed) ──
+  const [game, setGame]           = useState<any>(null);
+
   // ── today's opportunities ──
   const [opps, setOpps]           = useState<any[]>([]);
   const [oppsLoading, setOppsLoading] = useState(false);
@@ -87,6 +90,7 @@ export default function TradingPage() {
 
   // ── auto-alerts (loop เช็ครอบ) ──
   const [alertsOn, setAlertsOn]   = useState(false);
+  const [showTools, setShowTools] = useState(false);   // deep-dive tools collapsed by default
   const [alertMsgs, setAlertMsgs] = useState<{ id: number; text: string }[]>([]);
   const prevSignals = useRef<Set<string>>(new Set());
   const alertCheckedOnce = useRef(false);
@@ -108,6 +112,42 @@ export default function TradingPage() {
     await api.post(`/trading/alerts/${id}/read`).catch(() => {});
     setAlertHistory((h) => h.map((a) => (a.id === id ? { ...a, is_read: true } : a)));
     setAlertUnread((n) => Math.max(0, n - 1));
+  };
+
+  // ── runtime tunings (coach/night/manual adjustable params) ──
+  type Tunings = {
+    effective: Record<string, number | string>;
+    bounds: Record<string, { min?: number; max?: number; options?: string[] }>;
+    overrides: { key: string; value: number | string; reason: string; source: string; updated_at: string | null }[];
+  };
+  const [tunings, setTunings] = useState<Tunings | null>(null);
+  const [tuneEdit, setTuneEdit] = useState<{ key: string; value: string } | null>(null);
+  const loadTunings = useCallback(() => {
+    api.get(`/trading/tunings`).then((r) => setTunings(r.data)).catch(() => {});
+  }, []);
+  useEffect(() => { loadTunings(); }, [loadTunings]);
+  const saveTuning = async () => {
+    if (!tuneEdit) return;
+    try {
+      // enum params (e.g. DESK_SCAN_TIMEFRAME=4H) send the raw string
+      const num = parseFloat(tuneEdit.value);
+      const value = Number.isNaN(num) ? tuneEdit.value.trim().toUpperCase() : num;
+      await api.put(`/trading/tunings/${tuneEdit.key}`, { value, reason: "ปรับเองจากหน้า /trading" });
+      setTuneEdit(null);
+      loadTunings();
+    } catch (e: any) {
+      setError(e?.response?.data?.detail ?? "ปรับค่าไม่สำเร็จ");
+    }
+  };
+
+  // telegram test
+  const [tgMsg, setTgMsg] = useState<string | null>(null);
+  const testTelegram = async () => {
+    setTgMsg("กำลังส่ง…");
+    try {
+      const r = await api.post(`/trading/notify/test`);
+      setTgMsg(!r.data.configured ? "❌ ยังไม่ได้ตั้ง TELEGRAM_BOT_TOKEN" : r.data.sent ? "✅ ส่งถึง Telegram แล้ว" : "❌ ส่งไม่สำเร็จ (เช็ค token/กด Start bot)");
+    } catch { setTgMsg("❌ ส่งไม่สำเร็จ"); }
   };
 
   // outbound webhook config (opt-in)
@@ -258,6 +298,22 @@ export default function TradingPage() {
     } catch { /* ignore */ }
   };
   useEffect(() => { loadPaper(); /* eslint-disable-next-line */ }, [current]);
+
+  // game summary — read the worker's latest snapshot (regime + signals + ML view)
+  const loadGame = async () => {
+    if (!current) return;
+    try {
+      const r = await api.get(`/trading/desk/workspace/${current.id}`);
+      setGame(r.data.game_summary ?? null);
+    } catch { /* ignore */ }
+  };
+  useEffect(() => {
+    if (!current) return;
+    loadGame();
+    const t = setInterval(loadGame, 60_000);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [current]);
 
   const openPaper = async (o: any) => {
     if (!current) return;
@@ -454,6 +510,153 @@ export default function TradingPage() {
           {scanning ? "กำลังสแกน…" : "สแกนสัญญาณ"}
         </button>
       </div>
+
+      {/* ── สรุปเกมตอนนี้ (worker-computed: regime + signals + ML) ── */}
+      {game && (() => {
+        const reg = game.regime as string;
+        const regMap: Record<string, { txt: string; fg: string; bg: string }> = {
+          bullish: { txt: "🐂 ขาขึ้น", fg: "#4ade80", bg: "rgba(34,197,94,0.12)" },
+          bearish: { txt: "🐻 ขาลง",  fg: "#f87171", bg: "rgba(239,68,68,0.12)" },
+          neutral: { txt: "⚖️ กลาง",  fg: "#94a3b8", bg: "rgba(148,163,184,0.12)" },
+        };
+        const r = regMap[reg] ?? regMap.neutral;
+        const go = game.verdict === "go";
+        const floorPct = Math.round((game.ml_floor ?? 0.5) * 100);
+        const pct = (p: any) => (p == null ? "—" : `${Math.round(p * 100)}%`);
+        return (
+          <div className="mb-5 rounded-xl border border-white/10 bg-[#141228]/70 p-4 backdrop-blur-md">
+            <div className="mb-3 flex items-center gap-2">
+              <span className="text-sm font-semibold text-white/80">🎮 สรุปเกมตอนนี้</span>
+              <span className="rounded-md px-2 py-0.5 text-xs font-bold" style={{ color: r.fg, background: r.bg }}>
+                {r.txt}
+              </span>
+              {game.early_turn && (
+                <span className="rounded-md px-2 py-0.5 text-xs font-bold"
+                  style={{ color: "#fbbf24", background: "rgba(251,191,36,0.12)" }}
+                  title="breadth + ข่าวชี้ว่าขาลงอาจกำลังกลับตัว — เกณฑ์พิเศษหมีถูกผ่อนครึ่งหนึ่ง">
+                  🌅 อาจกำลังกลับตัว
+                </span>
+              )}
+              <div className="flex-1" />
+              <span className="text-[10px] text-white/30">
+                เหรียญที่สแกน {game.scanned} · สัญญาณวันนี้ {game.signals_today}
+                {game.breadth != null && <> · 🌡️ เขียว {Math.round(game.breadth * 100)}%</>}
+              </span>
+            </div>
+
+            {/* verdict banner */}
+            <div className="mb-3 rounded-lg px-3 py-2 text-sm font-semibold"
+              style={{ color: go ? "#4ade80" : "#fbbf24", background: go ? "rgba(34,197,94,0.1)" : "rgba(251,191,36,0.1)" }}>
+              {go
+                ? "🟢 มีจังหวะ! มีเหรียญเข้า setup และ ML ยืนยัน (≥ " + floorPct + "%) — ดูรายการ ⭐ โอกาสวันนี้ ด้านล่าง"
+                : "🟡 รอจังหวะ — ทั้งกฎเทคนิคและ ML ยังไม่เห็นโอกาสชนะ การไม่เข้า = รักษาแต้มในตลาดนี้"}
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-2">
+              {/* top ML picks */}
+              <div className="rounded-lg border border-white/10 bg-black/20 p-3">
+                <p className="mb-2 text-[11px] font-semibold text-white/50">
+                  🤖 ML มองโอกาสขึ้นสูงสุด <span className="text-white/30">(เกณฑ์ยืนยัน {floorPct}%)</span>
+                </p>
+                {game.top_ml?.length > 0 ? (
+                  <div className="space-y-1.5">
+                    {game.top_ml.map((m: any) => {
+                      const p = m.ml_prob ?? 0;
+                      const ok = p >= (game.ml_floor ?? 0.5);
+                      return (
+                        <div key={m.symbol} className="flex items-center gap-2 text-[11px]">
+                          <span className="w-24 shrink-0 font-semibold text-white">{m.symbol}</span>
+                          <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-white/5">
+                            <div className="h-full rounded-full" style={{ width: `${p * 100}%`, background: ok ? "#4ade80" : "#f59e0b" }} />
+                          </div>
+                          <span className="w-10 shrink-0 text-right font-bold" style={{ color: ok ? "#4ade80" : "#fbbf24" }}>{pct(p)}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <p className="text-[11px] text-white/30">ML ยังไม่พร้อม (รอรอบ refresh)</p>
+                )}
+              </div>
+
+              {/* best-structured pick */}
+              <div className="rounded-lg border border-white/10 bg-black/20 p-3">
+                <p className="mb-2 text-[11px] font-semibold text-white/50">⭐ โครงสร้างพร้อมสุด (opportunity score)</p>
+                {game.top_pick ? (
+                  <div>
+                    <div className="flex items-baseline gap-2">
+                      <span className="text-lg font-bold text-white">{game.top_pick.symbol}</span>
+                      <span className="text-xs text-white/40">score {game.top_pick.opportunity_score}</span>
+                    </div>
+                    <p className="mt-1 text-[11px]" style={{ color: game.top_pick.signal_today ? "#4ade80" : "#94a3b8" }}>
+                      {game.top_pick.signal_today
+                        ? "✅ เข้า setup แล้ว"
+                        : "⏳ ใกล้ที่สุด — ยังรอราคาทริกเงื่อนไข"}
+                      {game.top_pick.ml_prob != null && ` · ML ${pct(game.top_pick.ml_prob)}`}
+                    </p>
+                  </div>
+                ) : (
+                  <p className="text-[11px] text-white/30">ยังไม่มีข้อมูล</p>
+                )}
+              </div>
+            </div>
+            <p className="mt-2 text-[10px] text-amber-300/50">🔒 บริบทช่วยตัดสินใจ ไม่ใช่คำแนะนำการลงทุน</p>
+          </div>
+        );
+      })()}
+
+      {/* ── ⚙️ เกณฑ์ที่ใช้อยู่ (runtime tunings — coach/night/manual) ── */}
+      {tunings && (
+        <div className="mb-5 rounded-xl border border-white/10 bg-[#141228]/70 p-4 backdrop-blur-md">
+          <div className="mb-2 flex items-center gap-2">
+            <span className="text-sm font-semibold text-white/80">⚙️ เกณฑ์ที่ใช้อยู่</span>
+            <span className="text-[10px] text-white/30">คลิกตัวเลขเพื่อแก้ · ค่าสีชมพู = ถูก override จากค่าตั้งต้น</span>
+            <div className="flex-1" />
+            <button onClick={testTelegram}
+              className="rounded-lg border border-white/15 px-2.5 py-1 text-[11px] text-white/60 hover:bg-white/10">
+              📨 ทดสอบ Telegram
+            </button>
+            {tgMsg && <span className="text-[10px] text-white/50">{tgMsg}</span>}
+          </div>
+          <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-3 lg:grid-cols-4">
+            {Object.entries(tunings.effective).map(([k, v]) => {
+              const ov = tunings.overrides.find((o) => o.key === k);
+              const b = tunings.bounds[k];
+              const editing = tuneEdit?.key === k;
+              return (
+                <div key={k} className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5"
+                  title={ov ? `${ov.source}: ${ov.reason}`
+                            : `ค่าตั้งต้นจาก config · ${b?.options ? `ตัวเลือก ${b.options.join("/")}` : `กรอบ ${b?.min}–${b?.max}`}`}>
+                  <p className="truncate text-[9px] text-white/40">{k.replace("AUTO_PAPER_", "").replace("ML_VOTE_", "ML_")}</p>
+                  {editing ? (
+                    <span className="flex items-center gap-1">
+                      <input autoFocus value={tuneEdit.value}
+                        onChange={(e) => setTuneEdit({ key: k, value: e.target.value })}
+                        onKeyDown={(e) => { if (e.key === "Enter") saveTuning(); if (e.key === "Escape") setTuneEdit(null); }}
+                        className="w-16 rounded border border-accent-500/50 bg-black/40 px-1 text-sm text-white focus:outline-none" />
+                      <button onClick={saveTuning} className="text-[10px] text-accent-300">✓</button>
+                    </span>
+                  ) : (
+                    <button onClick={() => setTuneEdit({ key: k, value: String(v) })}
+                      className={`text-sm font-bold ${ov ? "text-primary-400" : "text-white/80"} hover:underline`}>
+                      {v}
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+          {tunings.overrides.length > 0 && (
+            <div className="mt-2 space-y-0.5">
+              {tunings.overrides.slice(0, 3).map((o) => (
+                <p key={o.key} className="truncate text-[10px] text-white/35">
+                  <span className="font-semibold text-white/50">{o.source}</span> ปรับ {o.key} → {o.value} · {o.reason}
+                </p>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* LangGraph pipeline visualization */}
       <div className="mb-5 rounded-xl border border-white/10 bg-[#141228]/70 px-4 py-3 backdrop-blur-md">
@@ -866,6 +1069,20 @@ export default function TradingPage() {
         )}
       </div>
 
+      {/* ── deep-dive tools: Backtest / Optimizer / ML — collapsed by default.
+             They are on-demand instruments, not the daily dashboard ── */}
+      <div className="mt-6">
+        <button onClick={() => setShowTools((v) => !v)}
+          className={`flex w-full items-center gap-2 rounded-xl border px-4 py-3 text-sm font-semibold transition ${
+            showTools ? "border-accent-400/40 bg-[#141228]/70 text-accent-300" : "border-white/10 bg-[#141228]/40 text-white/50 hover:bg-white/5"
+          }`}>
+          🧰 เครื่องมือเจาะลึก
+          <span className="text-[10px] font-normal text-white/30">Backtest · Auto-Optimizer · ML ensemble — ใช้เฉพาะกิจ</span>
+          <span className="ml-auto">{showTools ? "⊟ ซ่อน" : "⊞ เปิด"}</span>
+        </button>
+      </div>
+
+      {showTools && (<>
       {/* ── Backtest ── */}
       <div className="mt-6 rounded-xl border border-white/10 bg-[#141228]/70 backdrop-blur-md">
         <div className="flex flex-wrap items-center gap-2 border-b border-white/10 px-4 py-3">
@@ -1196,6 +1413,7 @@ export default function TradingPage() {
           {mlResult?.error && <p className="px-4 py-6 text-center text-xs text-white/40">{mlResult.error}</p>}
         </div>
       </div>
+      </>)}
 
       {/* ── Paper Trading ── */}
       <div className="mt-6 rounded-xl border border-white/10 bg-[#141228]/70 backdrop-blur-md">
@@ -1223,6 +1441,79 @@ export default function TradingPage() {
                 <p className="text-lg font-bold" style={{ color: c }}>{v}</p>
               </div>
             ))}
+          </div>
+        )}
+
+        {/* equity curve + exit reasons (client-computed from the closed journal) */}
+        {paperTrades.length > 0 && (() => {
+          const closed = [...paperTrades]
+            .filter((t) => t.exit_at && t.pnl_thb != null)
+            .sort((a, b) => new Date(a.exit_at).getTime() - new Date(b.exit_at).getTime());
+          if (closed.length === 0) return null;
+          let cum = 0;
+          const pts = closed.map((t) => (cum += t.pnl_thb));
+          const w = 560, h = 60;
+          const min = Math.min(0, ...pts), max = Math.max(0, ...pts), rng = max - min || 1;
+          const xy = (v: number, i: number) =>
+            `${pts.length > 1 ? (i / (pts.length - 1)) * w : w},${h - ((v - min) / rng) * h}`;
+          const zeroY = h - ((0 - min) / rng) * h;
+          const last = pts[pts.length - 1];
+          const reasons: Record<string, number> = {};
+          closed.forEach((t) => { reasons[t.exit_reason || "?"] = (reasons[t.exit_reason || "?"] || 0) + 1; });
+          const R_META: Record<string, { label: string; c: string }> = {
+            target: { label: "🎯 ถึงเป้า", c: "#4ade80" }, stop: { label: "โดน stop", c: "#f87171" },
+            breakeven: { label: "🛡️ ที่ทุน", c: "#22d3ee" }, time: { label: "⏱ หมดเวลา", c: "#f59e0b" },
+            max_loss: { label: "⛔ ตัดขาดทุน", c: "#dc2626" },
+          };
+          return (
+            <div className="px-4 pb-3">
+              <p className="mb-1.5 text-[11px] font-semibold text-white/50">📈 เส้นทางแต้มสะสม ({closed.length} ไม้)</p>
+              <svg viewBox={`0 0 ${w} ${h}`} className="h-16 w-full">
+                <line x1={0} y1={zeroY} x2={w} y2={zeroY} stroke="#ffffff22" strokeDasharray="3 3" />
+                <polyline fill="none" stroke={last >= 0 ? "#4ade80" : "#f87171"} strokeWidth={2}
+                  points={`0,${zeroY} ` + pts.map(xy).join(" ")} />
+              </svg>
+              <div className="mt-0.5 flex items-center justify-between text-[10px] text-white/35">
+                <span>ไม้แรก</span>
+                <span className={last >= 0 ? "text-emerald-400" : "text-red-400"}>สะสม {last >= 0 ? "+" : ""}{last.toFixed(2)}฿</span>
+              </div>
+              <div className="mt-2 flex h-2 w-full overflow-hidden rounded-full bg-white/5">
+                {Object.entries(reasons).map(([k, n]) => (
+                  <span key={k} style={{ width: `${(n / closed.length) * 100}%`, background: R_META[k]?.c ?? "#94a3b8" }} />
+                ))}
+              </div>
+              <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-[10px] text-white/40">
+                {Object.entries(reasons).map(([k, n]) => (
+                  <span key={k}><span style={{ color: R_META[k]?.c }}>●</span> {R_META[k]?.label ?? k} × {n}</span>
+                ))}
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* calibration: predicted win% vs realized, per strategy */}
+        {(paperStats?.calibration?.strategies?.length ?? 0) > 0 && (
+          <div className="px-4 pb-3">
+            <p className="mb-1.5 text-[11px] font-semibold text-white/50">
+              🎯 ความแม่นของคำทำนาย (ทำนาย vs จริง ต่อกลยุทธ์)
+            </p>
+            {paperStats.calibration.strategies.map((s: any) => (
+              <div key={s.strategy} className="flex items-center gap-3 border-b border-white/5 py-1.5 text-[11px]">
+                <span className="w-40 truncate font-mono text-white/70">{s.strategy}</span>
+                <span className="text-white/40">{s.trades} ไม้</span>
+                <span className="text-white/50">ทำนาย {s.predicted_win_pct != null ? `${s.predicted_win_pct}%` : "—"}</span>
+                <span className="text-white/50">จริง {s.realized_win_pct}%</span>
+                {s.gap_pct != null && (
+                  <span className="ml-auto font-semibold"
+                    style={{ color: s.gap_pct >= 0 ? "#4ade80" : s.gap_pct >= -10 ? "#f59e0b" : "#f87171" }}>
+                    {s.gap_pct >= 0 ? "+" : ""}{s.gap_pct} pts
+                  </span>
+                )}
+              </div>
+            ))}
+            <p className="mt-1 text-[10px] text-white/30">
+              ติดลบ = กลยุทธ์โม้ (ทำนายสูงกว่าผลจริง) — ยิ่งมีไม้ปิดมาก ตัวเลขยิ่งเชื่อถือได้
+            </p>
           </div>
         )}
 

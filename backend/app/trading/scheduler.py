@@ -26,18 +26,30 @@ from app.trading import desk_store
 log = structlog.get_logger()
 _scheduler: AsyncIOScheduler | None = None
 
-HEAVY_SECONDS = 180
-FAST_SECONDS = 20
+HEAVY_SECONDS = settings.DESK_HEAVY_SECONDS
+FAST_SECONDS = settings.DESK_FAST_SECONDS
 
 
-async def _workspaces_with_watchlist() -> list:
+async def _active_workspaces() -> list:
+    """Workspaces whose desk should be (re)computed each heavy/pipeline/ml tick.
+
+    A desk is driven by EITHER a watchlist OR the volume scan (DESK_SCAN_ENABLED) —
+    so an empty watchlist must NOT freeze the worker. We include any workspace that
+    already has a desk snapshot (the scan keeps it alive) on top of those with an
+    enabled watchlist. Without this, a scan-only workspace never reaches
+    compute_full() and its desk (and auto-pin/auto-paper) goes stale forever.
+    """
     async with AsyncSessionLocal() as db:
-        res = await db.execute(
+        wl = await db.execute(
             select(WatchlistItem.workspace_id)
             .where(WatchlistItem.enabled == True)  # noqa: E712
             .distinct()
         )
-        return [row[0] for row in res.all()]
+        ids = {row[0] for row in wl.all()}
+        if settings.DESK_SCAN_ENABLED:
+            snap = await db.execute(select(DeskSnapshot.workspace_id))
+            ids.update(row[0] for row in snap.all())
+        return list(ids)
 
 
 async def _workspaces_with_snapshot() -> list:
@@ -49,7 +61,7 @@ async def _workspaces_with_snapshot() -> list:
 async def heavy_tick() -> None:
     """Full recompute of every workspace's desk + alert detection."""
     try:
-        ws_ids = await _workspaces_with_watchlist()
+        ws_ids = await _active_workspaces()
     except Exception as e:
         log.warning("desk_heavy_list_failed", error=str(e))
         return
@@ -78,7 +90,7 @@ async def pipeline_tick() -> None:
     it won't overlap a manual "Run Pipeline" or a previous auto run. Long but async
     (LLM awaits), so the fast tick + API keep serving while it runs."""
     try:
-        ws_ids = await _workspaces_with_watchlist()
+        ws_ids = await _active_workspaces()
     except Exception as e:
         log.warning("desk_pipeline_list_failed", error=str(e))
         return
@@ -102,7 +114,7 @@ async def ml_vote_tick() -> None:
     Heavy (trains XGBoost per coin) but decoupled + single-flight locked, so the
     scan only reads the cache. Opt-in via DESK_ML_VOTE_ENABLED."""
     try:
-        ws_ids = await _workspaces_with_watchlist()
+        ws_ids = await _active_workspaces()
     except Exception as e:
         log.warning("desk_ml_list_failed", error=str(e))
         return
@@ -118,6 +130,56 @@ async def ml_vote_tick() -> None:
                         timeout=settings.ML_VOTE_TICK_TIMEOUT_SECONDS)
         except Exception as e:
             log.warning("desk_ml_ws_failed", workspace=str(ws), error=str(e))
+
+
+async def market_watch_tick() -> None:
+    """Daily: diff Bitkub's official market list — auto-denylist vanished coins —
+    and refresh the 7-day volume baseline (sustained-volume discovery + pump
+    detection both read it)."""
+    from app.trading import market_watch
+    try:
+        async with AsyncSessionLocal() as db:
+            await market_watch.sync_market_symbols(db)
+        await market_watch.refresh_volume_baseline()
+    except Exception as e:
+        log.warning("market_watch_tick_failed", error=str(e))
+
+
+async def health_tick() -> None:
+    """Every 30 min: surface silent failures (stale desk / empty ML cache) as alerts."""
+    from app.trading import market_watch
+    try:
+        async with AsyncSessionLocal() as db:
+            await market_watch.health_check(db)
+    except Exception as e:
+        log.warning("health_tick_failed", error=str(e))
+
+
+async def coach_tick() -> None:
+    """Periodic check; the coach itself runs at most once per COACH_INTERVAL."""
+    from app.trading import coach
+    try:
+        async with AsyncSessionLocal() as db:
+            for ws in await coach.coach_workspaces(db):
+                await coach.run_coach(db, ws)
+    except Exception as e:
+        log.warning("coach_tick_failed", error=str(e))
+
+
+async def tf_tuner_tick() -> None:
+    """Periodic check; the per-coin TF scan runs at most once per its interval."""
+    from app.trading import tf_tuner
+    try:
+        async with AsyncSessionLocal() as db:
+            for ws in await _workspaces_with_snapshot():
+                await asyncio.wait_for(
+                    tf_tuner.run_tf_scan(db, ws),
+                    timeout=settings.TF_TUNER_TIMEOUT_SECONDS,
+                )
+    except asyncio.TimeoutError:
+        log.warning("tf_tuner_tick_timeout")
+    except Exception as e:
+        log.warning("tf_tuner_tick_failed", error=str(e))
 
 
 async def fast_tick() -> None:
@@ -154,6 +216,29 @@ def start_scheduler() -> None:
         _scheduler.add_job(ml_vote_tick, "interval",
                            seconds=settings.ML_VOTE_INTERVAL_SECONDS,
                            id="desk_ml_vote", max_instances=1, coalesce=True)
+    # market watcher: symbols diff (daily, runs once at boot to baseline) +
+    # health checks — the maintenance a human used to do by hand
+    if settings.MARKET_WATCH_ENABLED:
+        _scheduler.add_job(market_watch_tick, "interval",
+                           seconds=settings.MARKET_WATCH_INTERVAL_SECONDS,
+                           id="market_watch", max_instances=1, coalesce=True)
+        _scheduler.add_job(market_watch_tick, id="market_watch_boot")
+        _scheduler.add_job(health_tick, "interval",
+                           seconds=settings.HEALTH_CHECK_INTERVAL_SECONDS,
+                           id="health_check", max_instances=1, coalesce=True)
+    # weekly coach — the tick checks often, the Redis last-run stamp makes the
+    # actual tuning pass happen once per COACH_INTERVAL_SECONDS
+    if settings.COACH_ENABLED:
+        _scheduler.add_job(coach_tick, "interval",
+                           seconds=settings.COACH_CHECK_SECONDS,
+                           id="desk_coach", max_instances=1, coalesce=True)
+        _scheduler.add_job(coach_tick, id="desk_coach_boot")
+    # per-coin timeframe map — weekly heavy backtest scan, checked 6-hourly
+    if settings.PER_COIN_TF_ENABLED:
+        _scheduler.add_job(tf_tuner_tick, "interval",
+                           seconds=settings.TF_TUNER_CHECK_SECONDS,
+                           id="tf_tuner", max_instances=1, coalesce=True)
+        _scheduler.add_job(tf_tuner_tick, id="tf_tuner_boot")
     _scheduler.start()
     log.info("trading.scheduler.started", heavy_seconds=HEAVY_SECONDS, fast_seconds=FAST_SECONDS,
              pipeline_auto=settings.DESK_GRAPH_AUTO,

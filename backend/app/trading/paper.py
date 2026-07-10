@@ -55,3 +55,36 @@ def paper_stats(closed: list[dict]) -> dict:
         "avg_win_pct": round(sum(wins) / len(wins) * 100, 2) if wins else 0.0,
         "avg_loss_pct": round(sum(losses) / len(losses) * 100, 2) if losses else 0.0,
     }
+
+
+def calibration_stats(closed: list[dict]) -> dict:
+    """Predicted vs realized, per strategy — does the game's win% forecast hold up?
+
+    Each closed trade may carry the prediction snapshotted at entry
+    (`indicators.win_chance_pct`). Comparing the average prediction against the
+    realized win rate per strategy exposes an over-promising strategy long before
+    its equity curve does. Trades without a snapshot (manual/legacy) are counted
+    but excluded from the predicted average.
+    """
+    by_strat: dict[str, list[dict]] = {}
+    for t in closed:
+        by_strat.setdefault(t.get("strategy") or "manual", []).append(t)
+    strategies = []
+    for strat, trades in sorted(by_strat.items()):
+        n = len(trades)
+        wins = sum(1 for t in trades if (t.get("pnl_thb") or 0) > 0)
+        preds = [t["indicators"]["win_chance_pct"] for t in trades
+                 if isinstance(t.get("indicators"), dict)
+                 and t["indicators"].get("win_chance_pct") is not None]
+        predicted = round(sum(preds) / len(preds), 1) if preds else None
+        realized = round(wins / n * 100, 1)
+        strategies.append({
+            "strategy": strat,
+            "trades": n,
+            "predicted_win_pct": predicted,
+            "realized_win_pct": realized,
+            # + = under-promised (good surprise), - = over-promised
+            "gap_pct": round(realized - predicted, 1) if predicted is not None else None,
+            "with_prediction": len(preds),
+        })
+    return {"strategies": strategies, "total_closed": len(closed)}

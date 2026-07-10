@@ -67,8 +67,13 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const router = useRouter();
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
 
+  // the persisted auth store rehydrates AFTER the first client render, so
+  // isAuthenticated starts false on every hard reload / deep link. Redirect only
+  // when there is also no stored token — with a token present we render nothing
+  // and wait for rehydration (an *invalid* token still lands on /login via the
+  // API 401 interceptor).
   useEffect(() => {
-    if (!isAuthenticated) router.replace("/login");
+    if (!isAuthenticated && !localStorage.getItem("access_token")) router.replace("/login");
   }, [isAuthenticated, router]);
 
   if (!isAuthenticated) return null;

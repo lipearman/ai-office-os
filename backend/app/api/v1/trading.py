@@ -9,14 +9,15 @@ from app.core.database import get_db
 from app.models.user import User
 from app.models.watchlist import WatchlistItem
 from app.models.paper import PaperTrade
-from app.models.trading_state import TradingAlert, DeskLLMConfig, AlertWebhook
-from app.trading import alert_webhook
+from app.models.trading_state import TradingAlert, DeskLLMConfig, AlertWebhook, ScanExclusion
+from app.trading import alert_webhook, tuning
 from app.schemas.trading import (
     WatchlistItemOut, WatchlistItemCreate, WatchlistItemUpdate, PaperOpen,
 )
-from app.trading.paper import fill_open, close_pnl, unrealized, paper_stats
+from app.trading.paper import fill_open, close_pnl, unrealized, paper_stats, calibration_stats
 from app.trading.news import fetch_news, aggregate_sentiment
 from app.trading import desk_store
+from app.core.config import settings
 from datetime import datetime, timezone
 from app.api.deps import get_current_user
 from app.trading.bitkub import BitkubClient, to_tradingview_symbol, TIMEFRAMES
@@ -43,6 +44,132 @@ async def list_symbols(current_user: User = Depends(get_current_user)):
             "info": s.get("info", ""),
         })
     return out
+
+
+# ── scan exclusions (DB-backed delisting denylist) ──────────────
+@router.get("/exclusions")
+async def list_exclusions(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Denylist the market scan skips (delisted coins). Managed by the daily
+    market watcher; rows can also be added/removed here without a redeploy."""
+    res = await db.execute(select(ScanExclusion).order_by(ScanExclusion.created_at.desc()))
+    rows = res.scalars().all()
+    return {"exclusions": [
+        {"id": str(x.id), "symbol": x.symbol, "reason": x.reason,
+         "source": x.source, "created_at": x.created_at.isoformat() if x.created_at else None}
+        for x in rows
+    ], "config_static": settings.DESK_SCAN_EXCLUDE_SYMBOLS}
+
+
+@router.post("/exclusions", status_code=201)
+async def add_exclusion(
+    payload: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    symbol = str(payload.get("symbol", "")).strip().upper()
+    if not symbol or "_" not in symbol:
+        raise HTTPException(status_code=422, detail="symbol ต้องเป็นรูปแบบ BASE_THB เช่น SYND_THB")
+    existing = await db.execute(select(ScanExclusion).where(ScanExclusion.symbol == symbol))
+    if existing.scalar_one_or_none():
+        raise HTTPException(status_code=409, detail=f"{symbol} อยู่ใน denylist แล้ว")
+    db.add(ScanExclusion(symbol=symbol, reason=str(payload.get("reason", ""))[:200],
+                         source="manual"))
+    await db.commit()
+    return {"symbol": symbol, "status": "added"}
+
+
+@router.delete("/exclusions/{symbol}")
+async def remove_exclusion(
+    symbol: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    res = await db.execute(delete(ScanExclusion).where(ScanExclusion.symbol == symbol.upper()))
+    await db.commit()
+    if res.rowcount == 0:
+        raise HTTPException(status_code=404, detail=f"{symbol} ไม่อยู่ใน denylist")
+    return {"symbol": symbol.upper(), "status": "removed"}
+
+
+# ── coach + tunings (runtime-tunable params, adjusted from real results) ──
+@router.get("/tunings")
+async def list_tunings(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Effective params (config defaults + coach overrides) + the raw overrides."""
+    from app.models.trading_state import DeskTuning
+    res = await db.execute(select(DeskTuning).order_by(DeskTuning.key))
+    rows = res.scalars().all()
+    return {
+        "effective": await tuning.get_params(db),
+        "bounds": {
+            **{k: {"min": lo, "max": hi} for k, (lo, hi) in tuning.TUNABLE.items()},
+            **{k: {"options": list(v)} for k, v in tuning.TUNABLE_ENUM.items()},
+        },
+        "overrides": [
+            {"key": x.key, "value": x.text_value if x.text_value else x.value,
+             "reason": x.reason, "source": x.source,
+             "updated_at": x.updated_at.isoformat() if x.updated_at else None}
+            for x in rows
+        ],
+    }
+
+
+@router.put("/tunings/{key}")
+async def set_tuning(
+    key: str,
+    payload: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Manually override a tunable param (clamped to its bounds, no redeploy)."""
+    key = key.upper()
+    if key in tuning.TUNABLE:
+        try:
+            value: float | str = float(payload.get("value"))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=422, detail="value ต้องเป็นตัวเลข")
+        bounds: dict = dict(zip(("min", "max"), tuning.TUNABLE[key]))
+    elif key in tuning.TUNABLE_ENUM:
+        value = str(payload.get("value", ""))
+        bounds = {"options": list(tuning.TUNABLE_ENUM[key])}
+    else:
+        raise HTTPException(status_code=422,
+                            detail=f"ปรับได้เฉพาะ: {', '.join([*tuning.TUNABLE, *tuning.TUNABLE_ENUM])}")
+    try:
+        stored = await tuning.set_param(db, key, value,
+                                        str(payload.get("reason", "ปรับเอง"))[:200],
+                                        source="manual")
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    await db.commit()
+    return {"key": key, "requested": value, "stored": stored,
+            "clamped": stored != value, "bounds": bounds}
+
+
+@router.post("/notify/test")
+async def notify_test(current_user: User = Depends(get_current_user)):
+    """Send a test message to the configured Telegram chat (no dedupe)."""
+    from app.trading import notify
+    configured = bool(settings.TELEGRAM_BOT_TOKEN)
+    sent = await notify.send("🔔 ทดสอบจากหน้า /trading — ระบบแจ้งเตือนทำงานปกติ",
+                             tier=1) if configured else False
+    return {"configured": configured, "sent": sent}
+
+
+@router.post("/coach/run/workspace/{workspace_id}")
+async def run_coach_now(
+    workspace_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Run one coaching pass immediately (bypasses the weekly stamp)."""
+    from app.trading import coach
+    return await coach.run_coach(db, workspace_id, force=True)
 
 
 # ── single-symbol analysis ──────────────────────────────────────
@@ -272,19 +399,74 @@ async def trading_desk(
     if snap is None:
         return {"characters": [], "status": "warming_up", "computed_at": None}
     meta = snap.meta or {}
+    opps = meta.get("opps", [])
     # always return a fresh live ticker (with sparkline closes) regardless of snapshot age
     items = await desk_store._watchlist_items(db, workspace_id)
     if not items:
         # fallback: extract symbols from meta.opps
-        opps = meta.get("opps", [])
         items = [{"symbol": o["symbol"]} for o in opps if o.get("symbol")]
     live_ticker = await desk_store._live_ticker(items)
+    # "watch" = coins the ML model likes (P_up high) that have no entry signal yet
+    # (tuned floor — must match the auto-trader's real gate, or "go" lies)
+    floor = (await tuning.get_params(db))["ML_VOTE_MIN_PROB"]
+    watch = sorted(
+        ({"symbol": o.get("symbol"), "ml_prob": o.get("ml_prob"),
+          "win_chance_pct": o.get("win_chance_pct"), "price": o.get("price"),
+          "label": o.get("label"), "market_bias": o.get("market_bias")}
+         for o in opps if not o.get("signal_today") and (o.get("ml_prob") or 0) >= floor),
+        key=lambda x: -(x["ml_prob"] or 0),
+    )[:6]
     return {
         "characters": snap.characters or [],
         "ticker": live_ticker or meta.get("ticker", {}),
         "news_agg": meta.get("news_agg", {}),
+        "watch": watch,
+        "game_summary": {**_game_summary(opps, floor),
+                         "breadth": meta.get("breadth"),
+                         "early_turn": bool(meta.get("early_turn"))},
         "status": "ready",
         "computed_at": snap.computed_at.isoformat() if snap.computed_at else None,
+    }
+
+
+def _game_summary(opps: list[dict], floor: float) -> dict:
+    """One-glance "state of the game" from the worker's scanned opportunities.
+
+    Surfaces what both engines see right now: the BTC regime (shared market bias),
+    how many coins fired an entry signal, the ML model's top P(up) picks (even when
+    all sit below the confirm floor — that itself is the signal in a weak market),
+    the single best-structured coin by opportunity_score, and a wait/go verdict.
+    """
+    regime = "neutral"
+    for o in opps:
+        if o.get("market_bias"):
+            regime = o["market_bias"]
+            break
+    signals = [o for o in opps if o.get("signal_today")]
+    top_ml = sorted(
+        ({"symbol": o.get("symbol"), "ml_prob": o.get("ml_prob")}
+         for o in opps if o.get("ml_prob") is not None),
+        key=lambda x: -(x["ml_prob"] or 0),
+    )[:3]
+    pick = max(opps, key=lambda o: (o.get("opportunity_score") or 0), default=None)
+    top_pick = None
+    if pick and pick.get("symbol"):
+        top_pick = {
+            "symbol": pick.get("symbol"),
+            "opportunity_score": pick.get("opportunity_score"),
+            "ml_prob": pick.get("ml_prob"),
+            "signal_today": bool(pick.get("signal_today")),
+        }
+    # "go" only when a coin both fired a signal AND the ML model confirms it
+    go = any((o.get("ml_prob") or 0) >= floor for o in signals)
+    return {
+        "regime": regime,
+        "scanned": len(opps),
+        "signals_today": len(signals),
+        "top_ml": top_ml,
+        "top_pick": top_pick,
+        "ml_floor": floor,
+        "verdict": "go" if go else "wait",
     }
 
 
@@ -410,19 +592,6 @@ async def trigger_meeting(
 
 
 # ── desk chat (ask questions about pipeline data) ──────────────
-_CHAT_SYSTEM = """คุณคือทีมวิเคราะห์การเทรดคริปโตที่มีสมาชิก 7 คน:
-- 📊 Market Analyst: วิเคราะห์แนวโน้มตลาด แนวรับแนวต้าน
-- 📰 News & Sentiment: วิเคราะห์ข่าวและ sentiment
-- 🤖 Trader: วิเคราะห์จุดเข้าซื้อ/ขาย
-- 🛡️ Risk Officer: ประเมินความเสี่ยง
-- 🎯 Coach: ให้คำแนะนำเชิงกลยุทธ์
-- 📉 Model Monitor: วิเคราะห์โอกาสเหรียญ
-- 🔍 Execution Reviewer: ตรวจสอบประสิทธิภาพ
-
-เมื่อมีคำถามจากผู้ใช้ ให้ทุกคนช่วยกันตอบโดยใช้ข้อมูลที่มี แต่ละคนแสดงความเห็นตามบทบาทของตน
-ตอบสั้น กระชับ เป็นธรรมชาติ ภาษาไทย"""
-
-
 @router.post("/desk/workspace/{workspace_id}/chat")
 async def desk_chat(
     workspace_id: uuid.UUID,
@@ -430,77 +599,16 @@ async def desk_chat(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Answer user questions about pipeline data using all agent personas."""
-    from langchain_core.messages import SystemMessage, HumanMessage
-    from app.agents.llm import get_llm
-    from app.trading.desk_store import get_snapshot, _watchlist_items, _live_ticker
+    """Answer user questions about pipeline data using all agent personas.
+
+    Shares the same brain as the Telegram bot (app.trading.desk_chat)."""
+    from app.trading import desk_chat as chat
 
     message = (payload.get("message") or "").strip()
     if not message:
         raise HTTPException(status_code=400, detail="message is required")
-
-    snap = await get_snapshot(db, workspace_id)
-    if snap is None:
-        raise HTTPException(status_code=404, detail="No snapshot yet")
-
-    meta = snap.meta or {}
-    characters = snap.characters or []
-
-    # build context
-    ctx_lines = ["ข้อมูลล่าสุดจาก Pipeline:"]
-    prices = meta.get("prices", {})
-    if prices:
-        ctx_lines.append("ราคา:")
-        for sym, p in sorted(prices.items()):
-            ctx_lines.append(f"  {sym}: {p:,.2f}")
-
-    ticker = meta.get("ticker", {})
-    if ticker:
-        ctx_lines.append("เปลี่ยนแปลง:")
-        for sym, t in sorted(ticker.items()):
-            chg = t.get("c", 0)
-            ctx_lines.append(f"  {sym}: {'+' if chg >= 0 else ''}{chg:.2f}%")
-
-    opps = meta.get("opps", [])
-    if opps:
-        ctx_lines.append("โอกาสวันนี้:")
-        for o in opps[:5]:
-            ctx_lines.append(f"  {o.get('symbol', '?')}: {o.get('strategy', '?')} win={o.get('win_chance_pct', 0)}%")
-
-    news = meta.get("news_agg", {})
-    assets = news.get("assets", [])
-    if assets:
-        ctx_lines.append("Sentiment:")
-        for a in assets[:3]:
-            ctx_lines.append(f"  {a.get('asset', '?')}: bullish={a.get('bullish', 0)} bearish={a.get('bearish', 0)}")
-
-    stats = meta.get("stats", {})
-    if stats:
-        ctx_lines.append(
-            f"สถิติ: win={stats.get('win_rate', 0):.1f}% "
-            f"profit={stats.get('total_pnl_thb', 0):,.0f} THB "
-            f"trades={stats.get('total_trades', 0)}"
-        )
-
-    ctx_lines.append("ข้อเท็จจริงของสมาชิก:")
-    for c in characters:
-        msg = c.get("message", "")
-        if msg:
-            ctx_lines.append(f"  {c.get('name', c.get('key', '?'))}: {msg}")
-
-    context = "\n".join(ctx_lines)
-
-    try:
-        llm = get_llm()
-        resp = await llm.ainvoke([
-            SystemMessage(content=_CHAT_SYSTEM),
-            HumanMessage(content=f"ข้อมูล Pipeline:\n{context}\n\nคำถามผู้ใช้:\n{message}"),
-        ])
-        answer = resp.content if isinstance(resp.content, str) else str(resp.content)
-    except Exception as e:
-        answer = f"ขออภัย ไม่สามารถตอบได้ในตอนนี้: {str(e)}"
-
-    return {"response": answer, "context": context}
+    answer = await chat.answer(db, workspace_id, message)
+    return {"response": answer}
 @router.get("/desk/pipeline/status")
 async def pipeline_status():
     """Check if the background scheduler + realtime subscriber are running."""
@@ -838,6 +946,9 @@ async def paper_stats_endpoint(
             PaperTrade.workspace_id == workspace_id, PaperTrade.status == "CLOSED"
         )
     )
-    closed = [{"pnl_pct": t.pnl_pct or 0.0, "pnl_thb": t.pnl_thb or 0.0}
+    closed = [{"pnl_pct": t.pnl_pct or 0.0, "pnl_thb": t.pnl_thb or 0.0,
+               "strategy": t.strategy, "indicators": t.indicators}
               for t in res.scalars().all()]
-    return paper_stats(closed)
+    out = paper_stats(closed)
+    out["calibration"] = calibration_stats(closed)
+    return out

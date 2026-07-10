@@ -61,6 +61,39 @@ class AlertWebhook(Base, UUIDMixin, TimestampMixin):
     enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
 
+class ScanExclusion(Base, UUIDMixin, TimestampMixin):
+    """A symbol the market scan must never surface (exchange-wide, not per workspace).
+
+    Rows come from the daily market watcher (a market that vanished from Bitkub's
+    official symbols list = delisted) or are added by hand. DB-backed so a new
+    delisting needs no code change / container rebuild — unlike the static
+    DESK_SCAN_EXCLUDE_SYMBOLS config list, which stays as a bootstrap.
+    """
+    __tablename__ = "scan_exclusions"
+
+    symbol: Mapped[str] = mapped_column(String(30), nullable=False, unique=True, index=True)
+    reason: Mapped[str] = mapped_column(String(200), default="")
+    source: Mapped[str] = mapped_column(String(20), default="manual")  # manual | symbols_diff
+
+
+class DeskTuning(Base, UUIDMixin, TimestampMixin):
+    """One runtime override of a tunable trading parameter (see trading/tuning.py).
+
+    Written by the weekly coach (from real closed-trade results) or by hand via
+    the API. Values are clamped to the TUNABLE bounds on every read AND write,
+    so a bad row can never push the system outside its safety envelope.
+    """
+    __tablename__ = "desk_tunings"
+
+    key: Mapped[str] = mapped_column(String(50), nullable=False, unique=True, index=True)
+    value: Mapped[float] = mapped_column(Float, nullable=False)
+    # enum-typed params (e.g. DESK_SCAN_TIMEFRAME) store their choice here and
+    # keep `value` at 0.0 — numeric params leave this NULL
+    text_value: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    reason: Mapped[str] = mapped_column(String(200), default="")
+    source: Mapped[str] = mapped_column(String(20), default="coach")  # coach | manual
+
+
 class TradingAlert(Base, UUIDMixin, TimestampMixin):
     """A 'new setup' alert detected by the worker (durable, replaces in-memory)."""
     __tablename__ = "trading_alerts"

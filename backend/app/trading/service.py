@@ -108,61 +108,31 @@ async def ml_symbol(
     return await asyncio.to_thread(ml_report, candles, horizon)
 
 
-async def daily_opportunity(
-    client: BitkubClient, symbol: str, cfg: dict | None = None, default_tf: str = "1H",
-    regime: dict | None = None, ml_prob: float | None = None,
-) -> dict | None:
-    """Estimate today's winning chance for a symbol.
-
-    Combines (a) whether the (assigned) strategy's entry condition fires on the
-    latest CLOSED bar, with (b) that strategy's historical win rate / profit
-    factor from a backtest. This is an *estimate* from past setups + the current
-    signal — not a guarantee.
-    """
-    tv = to_tradingview_symbol(symbol)
-    tf = (cfg or {}).get("timeframe") or default_tf
-    params = BacktestParams(**cfg["params"]) if cfg and cfg.get("params") else BacktestParams()
+def _evaluate_strategy(candles: list, params: BacktestParams, tf: str) -> dict:
+    """Score ONE strategy on a symbol: historical edge (backtest + walk-forward)
+    + whether its entry fires on the latest closed bar + a trade plan. No regime/
+    ML overlay here — that's applied once to the chosen strategy."""
     strategy = params.strategy
-
-    try:
-        candles = await client.fetch_ohlcv(tv, tf, limit=1500)
-    except BitkubError:
-        return None
-    if not candles:
-        return None
-
-    # historical edge for this strategy on this symbol
     bt = run_backtest(candles, params)
     hist = bt.stats
-    wr = hist.get("win_rate")
-    pf = hist.get("profit_factor")
-    n = hist.get("total_trades", 0)
-    exp = hist.get("expectancy_pct")
-    # walk-forward view: is the edge consistent across time + still alive recently?
-    # (the single backtest above is all-history; this is the more honest signal)
+    wr = hist.get("win_rate"); pf = hist.get("profit_factor")
+    n = hist.get("total_trades", 0); exp = hist.get("expectancy_pct")
     wf = walk_forward_winrate(candles, params)
-    oos_wr = wf.get("oos_win_rate")
-    recent_wr = wf.get("recent_win_rate")
-    wf_std = wf.get("wf_stability_std")
+    oos_wr = wf.get("oos_win_rate"); recent_wr = wf.get("recent_win_rate"); wf_std = wf.get("wf_stability_std")
 
-    # today's signal: does the entry fire on the latest closed bar?
     df = indicator_frame(candles, closed_only=True).reset_index(drop=True)
-    C = prepare(df)
-    last = len(df) - 1
+    C = prepare(df); last = len(df) - 1
     signal_today = bool(last >= 0 and _valid_i(C, last) and _entry_ok_i(C, last, params))
-
-    # trade plan from the latest bar
     close = float(C["close"][last]); atr = float(C["atr14"][last]) or close * 0.01
     stop = close - params.stop_atr * atr
     target = close + params.tp_rr * (close - stop)
 
-    confidence = min(1.0, n / 15.0)              # sample-size confidence
+    confidence = min(1.0, n / 15.0)
     has_edge = (pf is not None and pf >= 1.2 and (wr or 0) >= 50)
     reasons: list[str] = []
+    label_strat = "RSI reversion" if strategy == "rsi_reversion" else "EMA pullback"
 
     if signal_today:
-        # win chance: prefer the walk-forward (out-of-sample) view, weighted toward
-        # recent performance, so a coin whose edge decayed lately scores lower.
         if oos_wr is not None and recent_wr is not None:
             win_chance = round(0.4 * oos_wr + 0.6 * recent_wr, 1)
         elif oos_wr is not None:
@@ -171,13 +141,11 @@ async def daily_opportunity(
             win_chance = wr
         else:
             win_chance = 50.0
-        # an unstable edge across periods (high fold spread) lowers confidence
         stab_factor = max(0.5, 1.0 - (wf_std or 0) / 40.0)
         eff_conf = confidence * stab_factor
-        # opportunity score: win chance, tempered by edge quality + confidence
         edge_mult = 1.0 if has_edge else (0.8 if (pf or 0) >= 1.0 else 0.6)
         score = round(win_chance * (0.55 + 0.45 * eff_conf) * edge_mult, 1)
-        reasons.append(f"✅ สัญญาณ {strategy} เกิดวันนี้ ({tf})")
+        reasons.append(f"✅ สัญญาณ {label_strat} เกิดวันนี้ ({tf})")
         if oos_wr is not None:
             reasons.append(f"walk-forward: เฉลี่ย {oos_wr}% · ล่าสุด {recent_wr}% (อดีตรวม {wr}% จาก {n} เทรด)")
         elif wr is not None and n >= 5:
@@ -202,24 +170,67 @@ async def daily_opportunity(
         win_chance = None
         score = round((10 if has_edge else 3) * confidence, 1)  # watch value only
         label = "🔵 ยังไม่มีจังหวะวันนี้"
-        reasons.append(f"ยังไม่เข้าเงื่อนไข {strategy} บนแท่งล่าสุด ({tf})")
+        reasons.append(f"ยังไม่เข้าเงื่อนไข {label_strat} บนแท่งล่าสุด ({tf})")
         if has_edge:
             reasons.append(f"กลยุทธ์มี edge ในอดีต (ชนะ {wr}% PF {pf}) — รอ setup")
         else:
             reasons.append("กลยุทธ์ยังไม่มี edge ชัดในอดีต")
 
-    # market-regime overlay: a long pullback that fights the BTC trend is riskier,
+    return {
+        "strategy": strategy, "signal_today": signal_today, "win_chance": win_chance,
+        "score": score, "label": label, "reasons": reasons,
+        "close": close, "stop": stop, "target": target, "rr": params.tp_rr,
+        "wr": wr, "pf": pf, "exp": exp, "n": n,
+        "oos_wr": oos_wr, "recent_wr": recent_wr, "wf_std": wf_std, "wf_folds": wf.get("wf_folds"),
+    }
+
+
+async def daily_opportunity(
+    client: BitkubClient, symbol: str, cfg: dict | None = None, default_tf: str = "1H",
+    regime: dict | None = None, ml_prob: float | None = None,
+) -> dict | None:
+    """Estimate today's winning chance for a symbol.
+
+    Tries each candidate strategy (ema_pullback for trends + rsi_reversion for
+    ranges, unless an explicit cfg is assigned) and keeps the best one — a coin
+    with a fresh signal wins over one without, then highest opportunity score.
+    An *estimate* from past setups + the current signal — not a guarantee.
+    """
+    tv = to_tradingview_symbol(symbol)
+    tf = (cfg or {}).get("timeframe") or default_tf
+    try:
+        candles = await client.fetch_ohlcv(tv, tf, limit=1500)
+    except BitkubError:
+        return None
+    if not candles:
+        return None
+
+    # candidate strategies: an explicit cfg pins one; otherwise try both engines —
+    # EMA-pullback (trend, validated) AND RSI-reversion (mean-revert in ranges).
+    if cfg and cfg.get("params"):
+        candidates = [BacktestParams(**cfg["params"])]
+    else:
+        candidates = [BacktestParams(use_validator=True),
+                      BacktestParams(strategy="rsi_reversion")]
+    evals = [_evaluate_strategy(candles, p, tf) for p in candidates]
+    # signal-today first, then highest score
+    best = sorted(evals, key=lambda e: (0 if e["signal_today"] else 1, -(e["score"] or 0)))[0]
+
+    signal_today = best["signal_today"]; strategy = best["strategy"]
+    win_chance = best["win_chance"]; score = best["score"]; label = best["label"]
+    reasons = list(best["reasons"]); close = best["close"]; stop = best["stop"]; target = best["target"]
+
+    # market-regime overlay: a long setup that fights the BTC trend is riskier,
     # so discount its score (ranking) and tag the bias for the auto-trader.
     bias = (regime or {}).get("bias", "neutral")
     regime_mult = {"bullish": 1.0, "neutral": 0.92, "bearish": 0.7}.get(bias, 1.0)
-    score = round(score * regime_mult, 1)
+    score = round((score or 0) * regime_mult, 1)
     if signal_today and bias == "bearish":
         reasons.append("⚠️ ตลาดรวมขาลง (BTC) — long สวนเทรนด์ เสี่ยงสูง")
     elif signal_today and bias == "bullish":
         reasons.append("ตลาดรวมขาขึ้น (BTC) หนุนฝั่ง long")
 
-    # ML vote (cached, opt-in): confirm/veto the rule signal — advisory only,
-    # never a hard block (the model is a 'human gate' helper, not a trader).
+    # ML vote (cached, opt-in): confirm/veto the rule signal — advisory only.
     if ml_prob is not None and signal_today:
         if ml_prob < settings.ML_VOTE_MIN_PROB:
             score = round(score * 0.7, 1)
@@ -240,12 +251,12 @@ async def daily_opportunity(
         "opportunity_score": score,
         "label": label,
         "reasons": reasons,
-        "historical": {"win_rate": wr, "profit_factor": pf, "expectancy_pct": exp, "trades": n,
-                       "oos_win_rate": oos_wr, "recent_win_rate": recent_wr,
-                       "wf_stability_std": wf_std, "wf_folds": wf.get("wf_folds")},
+        "historical": {"win_rate": best["wr"], "profit_factor": best["pf"], "expectancy_pct": best["exp"],
+                       "trades": best["n"], "oos_win_rate": best["oos_wr"], "recent_win_rate": best["recent_wr"],
+                       "wf_stability_std": best["wf_std"], "wf_folds": best["wf_folds"]},
         "price": round(close, 2),
         "plan": {"entry": round(close, 2), "stop": round(stop, 2),
-                 "target": round(target, 2), "rr": params.tp_rr} if signal_today else None,
+                 "target": round(target, 2), "rr": best["rr"]} if signal_today else None,
         "disclaimer": "ประมาณการจากสถิติอดีต + สัญญาณวันนี้ ไม่ใช่การรับประกัน",
     }
 
@@ -276,12 +287,48 @@ async def market_regime(client: BitkubClient, symbol: str = "BTC_THB", tf: str =
     return {"bias": bias, "tf": tf, "detail": f"BTC {bias}"}
 
 
+def market_breadth(ticker: dict) -> float | None:
+    """Fraction of scanned coins green over 24h (0..1). Pure — unit-tested.
+
+    The structural regime (BTC EMA50/200) is deliberately slow; breadth is the
+    fast, market-wide tell that a downtrend is turning — e.g. 15/20 coins green
+    with alts leading showed up a full regime-flip before the EMAs could move.
+    """
+    chg = [t.get("c") for t in (ticker or {}).values()
+           if isinstance(t, dict) and t.get("c") is not None]
+    if not chg:
+        return None
+    return round(sum(1 for c in chg if c > 0) / len(chg), 3)
+
+
+def filter_pumped(ranked: list[tuple[str, float]], chg24: dict[str, float],
+                  max_chg: float) -> list[tuple[str, float]]:
+    """Drop coins that already ran >= max_chg% in 24h from the ML-radar ranking.
+
+    Pure — unit-tested. A missing 24h figure keeps the coin (fail-open: the
+    guard exists to stop chases, not to hide data gaps)."""
+    return [(s, p) for s, p in ranked if chg24.get(s, 0.0) < max_chg]
+
+
+def is_early_turn(structural_bearish: bool, breadth_ema: float | None,
+                  news_sentiment: float | None, threshold: float) -> bool:
+    """Early-turn = structure still bearish BUT breadth holds above threshold and
+    news is not negative. Pure — unit-tested. Used to SOFTEN the extra bearish
+    penalties only; the base (backtested) entry gates are never touched."""
+    if not structural_bearish or breadth_ema is None:
+        return False
+    return breadth_ema >= threshold and (news_sentiment or 0.0) >= 0.0
+
+
 async def daily_opportunities(items: list[dict], concurrency: int = 4,
-                              ml_votes: dict | None = None) -> list[dict]:
+                              ml_votes: dict | None = None,
+                              default_tf: str = "1H") -> list[dict]:
     """Evaluate each watchlist item (symbol + assigned cfg) → ranked by score.
 
     `ml_votes` = {symbol: P(up)} cached by the background ML job; passed through
-    so the rule signal gets an ML confirm/veto without training inline."""
+    so the rule signal gets an ML confirm/veto without training inline.
+    `default_tf` = the scan timeframe for coins without a per-coin cfg —
+    runtime-tunable (DESK_SCAN_TIMEFRAME)."""
     client = BitkubClient()
     regime = await market_regime(client)          # market-wide bias, computed once
     votes = ml_votes or {}
@@ -291,6 +338,7 @@ async def daily_opportunities(items: list[dict], concurrency: int = 4,
         async with sem:
             try:
                 return await daily_opportunity(client, it["symbol"], it.get("cfg"),
+                                               default_tf=default_tf,
                                                regime=regime, ml_prob=votes.get(it["symbol"]))
             except Exception:
                 # a single bad/illiquid symbol (esp. from market discovery) must

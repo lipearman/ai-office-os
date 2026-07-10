@@ -78,6 +78,10 @@ services:
       AUTO_PAPER_SIZE_THB: "1000"
       AUTO_PAPER_MIN_WIN_PCT: "30"
       AUTO_PAPER_REQUIRE_SIGNAL: "true"
+      # Telegram notifications - the real token lives in the gitignored root
+      # .env (compose interpolates it); empty = feature off. chat_id is
+      # auto-discovered from getUpdates and cached in Redis.
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
     ports:
       - "9003:8000"
     volumes:

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import structlog
 from sqlalchemy import select
@@ -33,6 +33,9 @@ PIPELINE_TTL = 600
 
 # Redis key for a cached ML vote P(up) per symbol (refreshed by a background job).
 ML_VOTE_KEY = "desk:mlvote:{symbol}"
+# Redis key tracking which watchlist symbols were AUTO-added from ML (so we can
+# prune only those, never the user's manually-added coins).
+AUTO_WATCHLIST_KEY = "desk:auto_watchlist:{workspace_id}"
 
 _PIPELINE_NODE_DEFS = {
     "monitor": {"id": "monitor", "name": "Model Monitor",     "emoji": "📉", "role": "advisory", "description": "Scan หา 10 เหรียญที่ดีที่สุดของวันนี้"},
@@ -140,7 +143,9 @@ from app.models.paper import PaperTrade
 from app.models.trading_state import DeskSnapshot, TradingAlert, DeskLLMConfig, AlertWebhook
 from app.models.agent import Agent
 from app.trading import alert_webhook
-from app.trading.service import daily_opportunities, build_desk
+from app.trading.service import (
+    daily_opportunities, build_desk, market_breadth, is_early_turn, filter_pumped,
+)
 from app.trading.paper import unrealized, paper_stats
 from app.trading.news import fetch_news, aggregate_sentiment
 from app.trading.bitkub import BitkubClient, to_market_symbol, to_tradingview_symbol
@@ -148,7 +153,7 @@ from app.trading import desk_llm
 from app.trading import auto_trader
 from app.trading.graph import get_graph
 from app.trading.state import DeskState
-from app.trading.ml import ml_vote
+from app.trading.ml import ml_vote, ml_vote_pooled
 from app.core.config import settings
 
 
@@ -176,11 +181,12 @@ async def _watchlist_items(db: AsyncSession, workspace_id) -> list[dict]:
     ]
 
 
-async def _discovered_symbols(limit: int) -> list[str]:
+async def _discovered_symbols(limit: int, extra_excluded: set[str] | None = None) -> list[str]:
     """Market discovery: top-N Bitkub THB pairs by 24h volume (one ticker call).
 
     The desk scans these on top of the watchlist so good movers surface without
-    being added by hand.
+    being added by hand. `extra_excluded` = DB-backed exclusions (delisted coins
+    found by the market watcher) merged with the static config denylist.
     """
     if limit <= 0:
         return []
@@ -189,6 +195,9 @@ async def _discovered_symbols(limit: int) -> list[str]:
         if not isinstance(ticker, dict):
             return []
         stable = {"USDT", "USDC", "BUSD", "DAI", "TUSD", "FDUSD"}
+        # delisting denylist — a DE-flagged coin spikes on volume but can't be held
+        excluded = {s.strip().upper() for s in settings.DESK_SCAN_EXCLUDE_SYMBOLS}
+        excluded |= extra_excluded or set()
         rows: list[tuple[str, float]] = []
         for mk, rec in ticker.items():
             if not isinstance(mk, str) or not mk.startswith("THB_") or not isinstance(rec, dict):
@@ -198,10 +207,22 @@ async def _discovered_symbols(limit: int) -> list[str]:
             except Exception:
                 continue
             # keep only proper BASE_THB pairs; skip stablecoins (no trading signal)
-            if not tv.endswith("_THB") or tv.split("_")[0] in stable:
+            # and any symbol on the delisting denylist
+            if not tv.endswith("_THB") or tv.split("_")[0] in stable or tv.upper() in excluded:
                 continue
             vol = rec.get("quoteVolume") or rec.get("baseVolume") or 0
             rows.append((tv, float(vol)))
+        # sustained-volume ranking: a coin earns its scan seat with 7 days of
+        # median volume, not one loud day — kills single-day pumps and short
+        # wash-trading bursts at the door. Missing baseline (brand-new coin or
+        # baseline job not run yet) -> rank 0 today; fail-open when the whole
+        # baseline is absent so the desk never goes blind.
+        if settings.DISCOVERY_SUSTAINED_VOLUME:
+            from app.trading.market_watch import get_volume_baseline
+            base = await get_volume_baseline()
+            if base:
+                rows = [(s, base.get(s, 0.0)) for s, _ in rows]
+                rows = [(s, v) for s, v in rows if v > 0]
         rows.sort(key=lambda r: -r[1])
         return [s for s, _ in rows[:limit]]
     except Exception:
@@ -215,11 +236,32 @@ async def watchlist_plus_discovered(db: AsyncSession, workspace_id) -> list[dict
     surface the same scan-discovered movers.
     """
     items = await _watchlist_items(db, workspace_id)
+    # DB-backed exclusions (delisted coins) apply to the watchlist too — a coin
+    # that left the exchange must not keep a desk seat just because it's pinned
+    try:
+        from app.trading.market_watch import db_exclusions
+        excluded = await db_exclusions(db)
+    except Exception:
+        excluded = set()
+    if excluded:
+        items = [it for it in items if it["symbol"].upper() not in excluded]
     if settings.DESK_SCAN_ENABLED:
+        from app.trading import tuning
+        top_n = int((await tuning.get_params(db))["DESK_SCAN_TOP_N"])
         wl = {it["symbol"] for it in items}
-        discovered = await _discovered_symbols(settings.DESK_SCAN_TOP_N)
+        discovered = await _discovered_symbols(top_n, excluded)
         items = items + [{"symbol": s, "cfg": None, "discovered": True}
                          for s in discovered if s not in wl]
+    # per-coin timeframe map (weekly tf_tuner): a coin with a PROVEN better
+    # heartbeat gets it here — the single funnel every consumer (signal scan,
+    # ML training, pipeline) passes through, so all layers stay on one clock.
+    if settings.PER_COIN_TF_ENABLED and items:
+        from app.trading.tf_tuner import get_tf_map
+        tf_map = await get_tf_map()
+        if tf_map:
+            for it in items:
+                if not (it.get("cfg") or {}).get("timeframe") and it["symbol"] in tf_map:
+                    it["cfg"] = {**(it.get("cfg") or {}), "timeframe": tf_map[it["symbol"]]}
     return items
 
 
@@ -302,6 +344,48 @@ async def get_snapshot(db: AsyncSession, workspace_id) -> DeskSnapshot | None:
     return res.scalar_one_or_none()
 
 
+async def _recent_alert_exists_local(db: AsyncSession, symbol: str,
+                                     text_prefix: str, hours: int = 48) -> bool:
+    """True when the same kind of alert for this symbol exists recently (dedupe
+    for DB alerts — Telegram has its own Redis dedupe)."""
+    from sqlalchemy import and_
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+    res = await db.execute(
+        select(TradingAlert.id).where(and_(
+            TradingAlert.symbol == symbol[:30],
+            TradingAlert.created_at >= cutoff,
+            TradingAlert.text.like(f"{text_prefix}%"),
+        )).limit(1)
+    )
+    return res.first() is not None
+
+
+async def _notify_market_events(opps: list[dict], news_agg: dict) -> None:
+    """Regime flips + strong news → Telegram (deduped; regime state in Redis)."""
+    from app.trading import notify
+    regime = next((o["market_bias"] for o in opps if o.get("market_bias")), "neutral")
+    try:
+        r = await get_redis()
+        prev = await r.get("notify:regime")
+        prev = prev.decode() if isinstance(prev, bytes) else prev
+        if prev and prev != regime:
+            await notify.send(notify.fmt_regime(prev, regime), tier=2,
+                              dedupe_key=f"regime:{regime}", dedupe_ttl=43200)
+        await r.set("notify:regime", regime)
+    except Exception:
+        pass
+    for a in (news_agg or {}).get("assets", []) or []:
+        s = a.get("sentiment") or 0
+        if (abs(s) >= settings.NOTIFY_NEWS_MIN_ABS_SENTIMENT
+                and (a.get("count") or 0) >= settings.NOTIFY_NEWS_MIN_COUNT):
+            head = (a.get("headlines") or [{}])[0].get("title", "")
+            await notify.send(
+                notify.fmt_news(a.get("asset", "?"), s, a.get("label", ""),
+                                a.get("count", 0), head),
+                tier=3,
+                dedupe_key=f"news:{a.get('asset')}:{'p' if s > 0 else 'n'}")
+
+
 async def compute_full(db: AsyncSession, workspace_id, force_graph: bool = False) -> DeskSnapshot:
     """Heavy tick: full analysis → LangGraph pipeline → upsert snapshot + detect alerts.
 
@@ -313,7 +397,10 @@ async def compute_full(db: AsyncSession, workspace_id, force_graph: bool = False
     items = await watchlist_plus_discovered(db, workspace_id)
     ml_votes = (await get_ml_votes([it["symbol"] for it in items])
                 if (items and settings.DESK_ML_VOTE_ENABLED) else {})
-    opps = await daily_opportunities(items, ml_votes=ml_votes) if items else []
+    from app.trading import tuning
+    scan_tf = str((await tuning.get_params(db))["DESK_SCAN_TIMEFRAME"])
+    opps = (await daily_opportunities(items, ml_votes=ml_votes, default_tf=scan_tf)
+            if items else [])
     prices = await _live_prices(items)
     positions = await _positions(db, workspace_id, prices)
     stats = await _stats(db, workspace_id)
@@ -330,6 +417,13 @@ async def compute_full(db: AsyncSession, workspace_id, force_graph: bool = False
     assets = sorted({w["symbol"].split("_")[0] for w in items})
     news_items = await fetch_news()
     news_agg = aggregate_sentiment(news_items, assets or None)
+
+    # Telegram: market-level intel — regime flips (tier 2) + unusually strong
+    # per-asset news (tier 3). Best-effort; a Telegram hiccup can't hurt the tick.
+    try:
+        await _notify_market_events(opps, news_agg)
+    except Exception as e:
+        log.warning("notify.market_events_failed", error=str(e))
 
     # deterministic fallback (always computed, used when graph is unavailable)
     det_chars = build_desk(opps, positions, stats, news_agg, prices, _seed())
@@ -488,12 +582,87 @@ async def compute_full(db: AsyncSession, workspace_id, force_graph: bool = False
             "symbol": sym, "strategy": o.get("strategy"), "timeframe": o.get("timeframe"),
             "win_chance_pct": o.get("win_chance_pct"), "label": o.get("label"), "text": text,
         })
+        # Telegram: ML-confirmed fresh setup = tier-1 entry timing; a rule signal
+        # the ML vetoes is a tier-2 near-miss (shows the system holding back)
+        try:
+            from app.trading import notify, tuning
+            floor = (await tuning.get_params(db))["ML_VOTE_MIN_PROB"]
+            mp = o.get("ml_prob")
+            if mp is not None and mp >= floor:
+                await notify.send(notify.fmt_entry(o), tier=1,
+                                  dedupe_key=f"entry:{sym}")
+            else:
+                await notify.send(
+                    f"🟡 เกือบครบเงื่อนไข — {sym}\n"
+                    f"มีสัญญาณกฎ (win ~{o.get('win_chance_pct')}%) แต่ ML ให้ "
+                    f"{mp if mp is not None else 'ไม่มีคะแนน'} < {floor} — ระบบขอรอ",
+                    tier=2, dedupe_key=f"nearmiss:{sym}")
+        except Exception as e:
+            log.warning("notify.setup_failed", error=str(e))
 
     # stash analysis so the cheap price-only tick can rebuild without re-scanning
     fact_lines = {c["key"]: c["message"] for c in det_chars}
     ticker = await _live_ticker(items)
+
+    # early-turn detector: breadth EMA + news vs the (slow) structural regime.
+    # State lives in Redis so auto_open (next tick) can soften the bearish
+    # extras; a flip in either direction notifies once (tier 2).
+    breadth = market_breadth(ticker)
+    early_turn = False
+    if settings.REGIME_TURN_ENABLED and breadth is not None:
+        try:
+            from app.trading import notify
+            r = await get_redis()
+            prev = await r.get("regime:breadth_ema")
+            prev_f = float(prev) if prev else breadth
+            ema = round(prev_f + settings.REGIME_TURN_EMA_ALPHA * (breadth - prev_f), 4)
+            await r.set("regime:breadth_ema", str(ema))
+            regime = next((o["market_bias"] for o in opps if o.get("market_bias")), "neutral")
+            senti = [a.get("sentiment") for a in (news_agg or {}).get("assets", [])
+                     if a.get("sentiment") is not None]
+            news_sent = sum(senti) / len(senti) if senti else None
+            early_turn = is_early_turn(regime == "bearish", ema, news_sent,
+                                       settings.REGIME_TURN_BREADTH)
+            was = (await r.get("regime:early_turn")) in (b"1", "1")
+            await r.set("regime:early_turn", "1" if early_turn else "0")
+            # early-turn is a STATE, not a moment — send while it holds (dedupe
+            # fires it once per 12h). A flip inside quiet hours is then delivered
+            # right after 08:00 instead of being swallowed forever: the quiet-
+            # hours gate runs BEFORE the dedupe key is written, so a muted
+            # attempt leaves no key and the next tick simply retries.
+            if early_turn:
+                await notify.send(notify.fmt_early_turn(int(ema * 100), news_sent or 0.0),
+                                  tier=2, dedupe_key="earlyturn:on", dedupe_ttl=43200)
+            elif was and not early_turn:
+                await notify.send("🌫️ ถอนสัญญาณกลับตัว — breadth อ่อนลง กลับไปเกณฑ์หมีเต็ม",
+                                  tier=2, dedupe_key="earlyturn:off", dedupe_ttl=43200)
+        except Exception as e:
+            log.warning("early_turn_failed", error=str(e))
+
+    # pump detector: price ran hard AND volume is a multiple of the coin's own
+    # 7d median -> flag it loudly (alert + Risk speaks + Telegram). Detection
+    # only — nothing in the scan/auto-trader will chase it either way.
+    try:
+        from app.trading.market_watch import get_volume_baseline, is_pump
+        from app.trading import notify
+        vol_base = await get_volume_baseline()
+        for sym, t in (ticker or {}).items():
+            if not (isinstance(t, dict) and vol_base.get(sym)):
+                continue
+            ratio = (t.get("v") or 0) * (t.get("p") or 0) / vol_base[sym]
+            if is_pump(t.get("c"), ratio, settings.RADAR_PUMP_MAX_24H_CHG,
+                       settings.PUMP_ALERT_VOL_RATIO):
+                text = notify.fmt_pump(sym, t["c"], ratio)
+                if not await _recent_alert_exists_local(db, sym, "🎪"):
+                    db.add(TradingAlert(workspace_id=workspace_id, symbol=sym,
+                                        text=text[:300]))
+                await notify.send(text, tier=2, dedupe_key=f"pump:{sym}", dedupe_ttl=172800)
+    except Exception as e:
+        log.warning("pump_detect_failed", error=str(e))
+
     meta = {"opps": opps, "stats": stats, "news_agg": news_agg, "prices": prices,
             "ticker": ticker,
+            "breadth": breadth, "early_turn": early_turn,
             "fact_lines": fact_lines, "role_overrides": role_overrides,
             "agent_configs": agent_configs,
             "graph_active": len(graph_commentary) > 0}
@@ -546,7 +715,10 @@ async def run_pipeline_only(db: AsyncSession, workspace_id) -> str:
         items = await watchlist_plus_discovered(db, workspace_id)
         ml_votes = (await get_ml_votes([it["symbol"] for it in items])
                     if (items and settings.DESK_ML_VOTE_ENABLED) else {})
-        opps = await daily_opportunities(items, ml_votes=ml_votes) if items else []
+        from app.trading import tuning
+        scan_tf = str((await tuning.get_params(db))["DESK_SCAN_TIMEFRAME"])
+        opps = (await daily_opportunities(items, ml_votes=ml_votes, default_tf=scan_tf)
+                if items else [])
         if not opps:
             return "no_opps"
         prices = await _live_prices(items)
@@ -633,20 +805,44 @@ async def refresh_ml_votes(db: AsyncSession, workspace_id) -> int:
             return 0
         client = BitkubClient()
         rr = r or await get_redis()
-        done = 0
+        from app.trading import tuning
+        scan_tf = str((await tuning.get_params(db))["DESK_SCAN_TIMEFRAME"])
+        candle_sets: dict[str, list] = {}
         for it in items:
             sym = it["symbol"]
-            tf = (it.get("cfg") or {}).get("timeframe") or "1H"
+            # ML must train on the SAME timeframe the signal scan reads,
+            # or the vote confirms a different game than the one being played
+            tf = (it.get("cfg") or {}).get("timeframe") or scan_tf
             try:
-                candles = await client.fetch_ohlcv(sym, tf, limit=1500)
-                prob = ml_vote(candles)
-                if prob is not None:
-                    await rr.setex(ML_VOTE_KEY.format(symbol=sym),
-                                   settings.ML_VOTE_TTL_SECONDS, str(round(prob, 4)))
-                    done += 1
+                candle_sets[sym] = await client.fetch_ohlcv(sym, tf, limit=1500)
             except Exception:
                 continue
-        log.info("desk_ml_votes_refreshed", workspace=str(workspace_id), count=done)
+        votes: dict[str, float] = {}
+        mode = "per_coin"
+        if settings.ML_VOTE_POOLED:
+            # one model over all coins pooled — steadier votes, one fit not N
+            votes = ml_vote_pooled(candle_sets)
+            if votes:
+                mode = "pooled"
+        if not votes:
+            for sym, candles in candle_sets.items():
+                prob = ml_vote(candles)
+                if prob is not None:
+                    votes[sym] = prob
+        done = 0
+        for sym, prob in votes.items():
+            try:
+                await rr.setex(ML_VOTE_KEY.format(symbol=sym),
+                               settings.ML_VOTE_TTL_SECONDS, str(round(prob, 4)))
+                done += 1
+            except Exception:
+                continue
+        log.info("desk_ml_votes_refreshed", workspace=str(workspace_id),
+                 count=done, mode=mode)
+        try:
+            await reconcile_auto_watchlist(db, workspace_id, votes, rr)
+        except Exception as e:
+            log.warning("auto_watchlist_failed", workspace=str(workspace_id), error=str(e))
         return done
     finally:
         if r is not None:
@@ -673,6 +869,80 @@ async def get_ml_votes(symbols: list[str]) -> dict[str, float]:
         except Exception:
             continue
     return out
+
+
+async def reconcile_auto_watchlist(db: AsyncSession, workspace_id, votes: dict[str, float], r=None) -> None:
+    """Non-destructively pin the coins the ML model likes most into the watchlist.
+
+    `desired` = top-N symbols with P(up) >= ML_VOTE_MIN_PROB. We add the desired
+    ones that aren't already in the watchlist, and remove ONLY symbols we added
+    automatically in a previous cycle (tracked in Redis) that are no longer
+    desired. Manually-added coins are never touched.
+    """
+    if not settings.AUTO_WATCHLIST_FROM_ML:
+        return
+    from app.trading import tuning
+    tp = await tuning.get_params(db)
+    floor = tp["ML_VOTE_MIN_PROB"]
+    ranked = sorted(((s, p) for s, p in votes.items() if p >= floor), key=lambda x: -x[1])
+    # pump guard: momentum features make the pooled ML love a coin right AFTER
+    # it already ran (EPIC: +32% pump -> ML 0.55 -> radar ping mid-dump). Coins
+    # up >= RADAR_PUMP_MAX_24H_CHG in 24h drop out of `desired`, so they never
+    # auto-pin or ping — and an earlier-pinned pump prunes itself next pass.
+    chg24: dict[str, float] = {}
+    try:
+        tkr = await BitkubClient().ticker()
+        if isinstance(tkr, dict):
+            for s, _ in ranked:
+                rec = tkr.get(to_market_symbol(s))
+                if isinstance(rec, dict) and rec.get("percentChange") is not None:
+                    chg24[s] = float(rec["percentChange"])
+    except Exception:
+        pass
+    guarded = filter_pumped(ranked, chg24, settings.RADAR_PUMP_MAX_24H_CHG)
+    if len(guarded) < len(ranked):
+        log.info("auto_watchlist.pump_guard",
+                 skipped=[s for s, _ in ranked if s not in {g for g, _ in guarded}])
+    desired = [s for s, _ in guarded[: int(tp["AUTO_WATCHLIST_TOP_N"])]]
+
+    res = await db.execute(select(WatchlistItem).where(WatchlistItem.workspace_id == workspace_id))
+    current = {w.symbol: w for w in res.scalars().all()}
+
+    r = r or await get_redis()
+    key = AUTO_WATCHLIST_KEY.format(workspace_id=workspace_id)
+    try:
+        raw = await r.get(key)
+        prev_auto = set(json.loads(raw)) if raw else set()
+    except Exception:
+        prev_auto = set()
+
+    to_add = [s for s in desired if s not in current]
+    to_remove = [s for s in prev_auto if s not in desired and s in current]
+
+    for s in to_add:
+        db.add(WatchlistItem(workspace_id=workspace_id, symbol=s, enabled=True, strategies=[]))
+    for s in to_remove:
+        await db.delete(current[s])
+    if to_add or to_remove:
+        await db.commit()
+
+    new_auto = (prev_auto - set(to_remove)) | set(to_add)
+    try:
+        await r.setex(key, 7 * 24 * 3600, json.dumps(sorted(new_auto)))
+    except Exception:
+        pass
+    if to_add or to_remove:
+        log.info("auto_watchlist_reconciled", workspace=str(workspace_id),
+                 added=to_add, removed=to_remove)
+    # Telegram tier 2: a coin crossing the ML bar onto the radar is worth a ping
+    # (with its 24h move attached, so a reader can spot a late entry instantly)
+    for s in to_add:
+        try:
+            from app.trading import notify
+            await notify.send(notify.fmt_radar(s, votes.get(s, 0.0), chg24.get(s)),
+                              tier=2, dedupe_key=f"radar:{s}")
+        except Exception:
+            pass
 
 
 async def refresh_prices(db: AsyncSession, workspace_id) -> DeskSnapshot | None:

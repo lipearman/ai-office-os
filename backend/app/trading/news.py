@@ -17,11 +17,18 @@ from datetime import datetime, timezone
 
 import feedparser
 
-# public RSS feeds (no key)
+# public RSS feeds — free forever, no API key, no paid tier. Deliberately chosen
+# over paid aggregators (CryptoPanic/CryptoCompare both went key-gated): more
+# sources = broader coverage at zero cost and zero dependency risk.
 FEEDS = [
     ("CoinDesk", "https://www.coindesk.com/arc/outboundfeeds/rss/"),
     ("Cointelegraph", "https://cointelegraph.com/rss"),
     ("Bitcoin Magazine", "https://bitcoinmagazine.com/.rss/full/"),
+    ("Decrypt", "https://decrypt.co/feed"),
+    ("The Block", "https://www.theblock.co/rss.xml"),
+    ("CryptoSlate", "https://cryptoslate.com/feed/"),
+    ("CryptoPotato", "https://cryptopotato.com/feed/"),
+    ("Bitcoin.com", "https://news.bitcoin.com/feed/"),
 ]
 
 # map keywords → asset code
@@ -138,8 +145,16 @@ async def fetch_news(limit_per_feed: int = 20) -> list[NewsItem]:
     for r in results:
         if isinstance(r, list):
             items.extend(r)
-    # newest first
-    items.sort(key=lambda x: x.published_at, reverse=True)
+    # de-dupe by title (same story often appears in multiple feeds), newest first
+    seen: set[str] = set()
+    deduped: list[NewsItem] = []
+    for it in sorted(items, key=lambda x: x.published_at, reverse=True):
+        k = it.title.strip().lower()[:80]
+        if k in seen:
+            continue
+        seen.add(k)
+        deduped.append(it)
+    items = deduped
     # only cache a non-empty fetch — keep retrying if all feeds failed
     if items:
         _news_cache[limit_per_feed] = (now, items)

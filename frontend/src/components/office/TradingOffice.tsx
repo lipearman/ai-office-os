@@ -43,6 +43,14 @@ const CHARS_PER_TICK = 2;
 const FADE_MS = 600;
 const STAGGER_MS = 900;  // gap between characters reacting to fresh data
 const POLL_MS = 15_000;  // refresh desk data (prices move → new things to say)
+// desk chatter: a character repeats its (changed) desk line at most this often —
+// keeps the floor alive between pipeline runs without becoming a bubble storm
+const CHATTER_COOLDOWN_MS = 150_000;
+// idle chatter: when the floor has gone quiet, the least-recently-heard character
+// re-speaks its current line — the office always has a conversation going
+const IDLE_TICK_MS = 9_000;       // how often we consider waking someone up
+const IDLE_RESPEAK_MS = 60_000;   // a character repeats itself at most once a minute
+const IDLE_MAX_BUBBLES = 2;       // don't add idle chatter when the floor is busy
 
 type Phase = "stream" | "show" | "fade";
 type Bubble = { text: string; idx: number; phase: Phase; born: number };
@@ -116,7 +124,9 @@ export default function TradingOffice({ officeName }: Props) {
 
   // ── bubble engine ──
   const [bubbles, setBubbles] = useState<Record<string, Bubble>>({});
-  const lastSpoken = useRef<Record<string, string>>({});  // last message streamed per char
+  const lastSpoken = useRef<Record<string, string>>({});    // last message streamed per char
+  const lastSpokenAt = useRef<Record<string, number>>({});  // when — for the chatter cooldown
+  const seenAlerts = useRef<Set<string> | null>(null);      // alert ids already spoken (null = first poll)
 
   // ── pipeline feed ──
   const [pipelineSteps, setPipelineSteps] = useState<{ node_id: string; report?: string; status: string; ts: number }[]>([]);
@@ -126,6 +136,8 @@ export default function TradingOffice({ officeName }: Props) {
   const [showNews, setShowNews] = useState(false);
   const [showChat, setShowChat] = useState(false);
   const [showPaper, setShowPaper] = useState(true);
+  const [showWatch, setShowWatch] = useState(false);
+  const [watch, setWatch] = useState<{ symbol: string; ml_prob?: number | null; win_chance_pct?: number | null; price?: number | null; label?: string; market_bias?: string }[]>([]);
   const [paperStats, setPaperStats] = useState<{ total_trades?: number; win_rate?: number; profit_factor?: number | null; total_pnl_thb?: number } | null>(null);
   const [paperPositions, setPaperPositions] = useState<{ id: string; symbol: string; strategy?: string; entry_price?: number; live?: { pnl_thb: number; pnl_pct: number } | null }[]>([]);
   const pipelineRunRef = useRef<string>("idle");
@@ -185,6 +197,7 @@ export default function TradingOffice({ officeName }: Props) {
       const t = r.data.ticker ?? {};
       if (Object.keys(t).length > 0) setTickerMap(t);
       if (r.data.news_agg) setNewsAgg(r.data.news_agg);
+      setWatch(r.data.watch ?? []);
       setUpdated(new Date());
       setError(null);
       setWarming(r.data.status === "warming_up");
@@ -242,6 +255,45 @@ export default function TradingOffice({ officeName }: Props) {
     return () => wsManager.off("desk.update", onDeskUpdate);
   }, [current, editMode]);
 
+  // worker alerts → the right character SPEAKS them + they land in the ⚡ Pipeline
+  // feed so they can be read back later. Routing: health → monitor, delisting →
+  // risk, new market → news, everything else (setup alerts) → trader.
+  useEffect(() => {
+    if (!current || editMode) return;
+    type Alert = { id: string; symbol: string; text: string; is_read: boolean; ts: number | null };
+    const routeAlert = (a: Alert) =>
+      a.symbol === "_HEALTH" || a.symbol === "_NIGHT" ? "monitor" :
+      a.symbol === "_COACH" ? "coach" :
+      a.text?.startsWith("⚠️") || a.text?.startsWith("🎪") ? "risk" :
+      a.text?.startsWith("🆕") ? "news" : "trader";
+    const speak = (a: Alert) => {
+      setPipelineReports((p) => ({ ...p, [routeAlert(a)]: a.text }));
+      setPipelineSteps((p) => [...p.slice(-50), { node_id: "🔔 alert", report: a.text, status: "alert", ts: a.ts ?? Date.now() / 1000 }]);
+      setShowPipelineFeed(true);   // surface the feed so the alert can be read back
+    };
+    const tick = async () => {
+      try {
+        const r = await api.get(`/trading/alerts/workspace/${current.id}`);
+        const alerts: Alert[] = r.data.alerts ?? [];
+        if (seenAlerts.current === null) {
+          // first poll: don't replay history — but greet with the newest unread
+          // alert of the last 24h so the floor opens with what matters
+          seenAlerts.current = new Set(alerts.map((a) => a.id));
+          const newest = alerts.find((a) => !a.is_read);
+          if (newest && newest.ts && Date.now() / 1000 - newest.ts < 86_400) speak(newest);
+          return;
+        }
+        for (const a of alerts.filter((x) => !seenAlerts.current!.has(x.id)).reverse()) {
+          seenAlerts.current!.add(a.id);
+          speak(a);
+        }
+      } catch { /* alerts are decoration here — the /trading page is the source of truth */ }
+    };
+    tick();
+    const t = setInterval(tick, POLL_MS);
+    return () => clearInterval(t);
+  }, [current, editMode]);
+
   // pipeline step → overlay message + auto-create character if missing
   useEffect(() => {
     if (!current || editMode) return;
@@ -279,22 +331,59 @@ export default function TradingOffice({ officeName }: Props) {
     return () => wsManager.off("desk.pipeline_step", onPipelineStep);
   }, [current, editMode]);
 
-  // only show bubble when a pipeline step report arrives
-  const spokenText = (c: DeskChar) => (pipelineReports[c.key]?.trim()) || "";
+  // what a character says right now: pipeline/alert lines take priority, then the
+  // desk's own data (LLM commentary if present, else the deterministic fact) —
+  // so the floor keeps talking from live desk data between pipeline runs
+  const spokenText = (c: DeskChar) =>
+    (pipelineReports[c.key]?.trim()) || (c.commentary?.trim()) || (c.message?.trim()) || "";
 
   // speak ONLY when a character's spoken line is new (fresh data/analysis) —
-  // no blind re-streaming of the same line. Stagger so they don't all talk at once.
+  // no blind re-streaming of the same line. Pipeline/alert lines speak instantly;
+  // plain desk chatter is rate-limited per character so price wiggles every fast
+  // tick don't turn the floor into a bubble storm. Stagger so they take turns.
   useEffect(() => {
     if (editMode) { setBubbles({}); return; }
-    const fresh = chars.filter((c) => spokenText(c) && lastSpoken.current[c.key] !== spokenText(c));
+    const now = Date.now();
+    const fresh = chars.filter((c) => {
+      const t = spokenText(c);
+      if (!t || lastSpoken.current[c.key] === t) return false;
+      const fromPipeline = !!pipelineReports[c.key]?.trim();
+      if (!fromPipeline && now - (lastSpokenAt.current[c.key] ?? 0) < CHATTER_COOLDOWN_MS) return false;
+      return true;
+    });
     if (fresh.length === 0) return;
     const timers = fresh.map((c, i) =>
       setTimeout(() => {
         lastSpoken.current[c.key] = spokenText(c);
+        lastSpokenAt.current[c.key] = Date.now();
         setBubbles((b) => ({ ...b, [c.key]: { text: spokenText(c), idx: 0, phase: "stream", born: Date.now() } }));
       }, i * STAGGER_MS)
     );
     return () => timers.forEach(clearTimeout);
+  }, [chars, pipelineReports, editMode]);
+
+  // idle chatter — the floor never goes fully silent: when few bubbles are up,
+  // wake the character who has been quiet the longest and let it re-speak its
+  // current line (round-robin via lastSpokenAt). Fresh lines/alerts still take
+  // priority through the effect above; this only fills the gaps between them.
+  useEffect(() => {
+    if (editMode) return;
+    const t = setInterval(() => {
+      setBubbles((prev) => {
+        if (Object.keys(prev).length >= IDLE_MAX_BUBBLES) return prev;
+        const now = Date.now();
+        const c = chars
+          .filter((x) => spokenText(x) && !prev[x.key])
+          .filter((x) => now - (lastSpokenAt.current[x.key] ?? 0) > IDLE_RESPEAK_MS)
+          .sort((a, b) => (lastSpokenAt.current[a.key] ?? 0) - (lastSpokenAt.current[b.key] ?? 0))[0];
+        if (!c) return prev;
+        lastSpoken.current[c.key] = spokenText(c);
+        lastSpokenAt.current[c.key] = now;
+        return { ...prev, [c.key]: { text: spokenText(c), idx: 0, phase: "stream", born: now } };
+      });
+    }, IDLE_TICK_MS);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chars, pipelineReports, editMode]);
 
   // streaming (typewriter)
@@ -445,6 +534,10 @@ export default function TradingOffice({ officeName }: Props) {
               <button onClick={() => setShowPaper((s) => !s)}
                 className={`rounded-md border px-2 py-1 text-[10px] ${showPaper ? "border-accent-400 text-accent-300" : "border-white/15 text-white/70"} hover:bg-white/10`}>
                 {showPaper ? "⊟ Paper" : "⊞ Paper"}
+              </button>
+              <button onClick={() => setShowWatch((s) => !s)}
+                className={`rounded-md border px-2 py-1 text-[10px] ${showWatch ? "border-accent-400 text-accent-300" : "border-white/15 text-white/70"} hover:bg-white/10`}>
+                {showWatch ? "⊟ Watch" : "⊞ Watch"}
               </button>
               <button onClick={load} className="rounded-md border border-white/15 px-2 py-1 text-white/70 hover:bg-white/10">รีเฟรช</button>
               <button onClick={enterEdit} className="flex items-center gap-1 rounded-md bg-primary-500 px-3 py-1 font-semibold text-white hover:bg-primary-600">
@@ -626,6 +719,7 @@ export default function TradingOffice({ officeName }: Props) {
                     <span className="shrink-0 whitespace-nowrap text-[8px] text-white/25">{timeStr}</span>
                     <span className={`mt-1 h-1 w-1 shrink-0 rounded-full ${
                       s.status === "completed" ? "bg-emerald-400" :
+                      s.status === "alert" ? "bg-pink-500 animate-pulse" :
                       s.status === "running" ? "bg-amber-400 animate-pulse" : "bg-white/20"
                     }`} />
                     <span className="font-semibold text-white/70">{s.node_id}</span>
@@ -730,6 +824,42 @@ export default function TradingOffice({ officeName }: Props) {
               </div>
               <div className="border-t border-white/10 px-3 py-1 text-[8px] text-white/25">
                 🤖 = auto · live ทุก {POLL_MS / 1000}s
+              </div>
+            </div>
+          </DraggableBox>
+        )}
+
+        {/* "watch" floating box — ML likes it, no entry signal yet */}
+        {!editMode && showWatch && (
+          <DraggableBox title="👀 น่าจับตา (ML)" defaultPos={{ x: 340, y: 300 }} storageKey="office-watch-box">
+            <div className="w-[280px] max-w-[calc(100vw-0.75rem)]">
+              <div className="grid grid-cols-[1fr_auto_auto] gap-x-2 px-3 py-1.5 text-[9px] font-semibold text-white/40 border-b border-white/10">
+                <span>Symbol</span>
+                <span className="text-right">ML P↑</span>
+                <span className="text-right w-16">ราคา</span>
+              </div>
+              <div className="px-3 py-1 space-y-0.5 max-h-[260px] overflow-y-auto">
+                {watch.length === 0 && (
+                  <p className="py-2 text-center text-[10px] text-white/30">ยังไม่มีเหรียญที่โมเดลเชื่อมั่น</p>
+                )}
+                {watch.map((w) => {
+                  const p = w.ml_prob ?? 0;
+                  const strong = p >= 0.6;
+                  return (
+                    <div key={w.symbol} className="grid grid-cols-[1fr_auto_auto] items-center gap-x-2 text-[11px]" title={w.label ?? ""}>
+                      <span className="truncate font-semibold text-white/90">{w.symbol.replace("_THB", "")}</span>
+                      <span className={`text-right font-mono font-semibold ${strong ? "text-emerald-400" : "text-accent-300"}`}>
+                        {Math.round(p * 100)}%
+                      </span>
+                      <span className="w-16 text-right font-mono text-white/50">
+                        {w.price != null ? (w.price >= 1000 ? (w.price / 1000).toFixed(1) + "K" : w.price.toLocaleString(undefined, { maximumFractionDigits: 2 })) : "—"}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="border-t border-white/10 px-3 py-1 text-[8px] text-white/25">
+                โมเดลมองว่ามีโอกาสขึ้น · รอจังหวะ setup (ยังไม่มีสัญญาณเข้า)
               </div>
             </div>
           </DraggableBox>

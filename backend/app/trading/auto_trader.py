@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.models.paper import PaperTrade
+from app.trading import notify, tuning
 from app.trading.paper import fill_open, close_pnl
 from app.trading.bitkub import BitkubClient
 
@@ -34,26 +35,57 @@ async def _open_positions(db: AsyncSession, workspace_id) -> list[PaperTrade]:
 
 async def auto_open(db: AsyncSession, workspace_id, opps: list[dict], prices: dict) -> list[str]:
     """Open paper trades on fresh, high-quality setups (within the guards)."""
-    if not settings.AUTO_PAPER_ENABLED:
+    # effective params: config defaults + DB-backed (clamped) overrides —
+    # includes the runtime kill switch, so trading can be paused via the API
+    p = await tuning.get_params(db)
+    if not p["AUTO_PAPER_ENABLED"]:
         return []
     open_trades = await _open_positions(db, workspace_id)
     open_syms = {t.symbol for t in open_trades}
-    slots = settings.AUTO_PAPER_MAX_POSITIONS - len(open_trades)
+    slots = int(p["AUTO_PAPER_MAX_POSITIONS"]) - len(open_trades)
     if slots <= 0:
         return []
+
+    # early-turn (breadth + news say the downtrend is turning while structure is
+    # still bearish, computed each heavy tick): soften the EXTRA bearish
+    # penalties by half. The base gates below are never touched.
+    bear_scale = 1.0
+    try:
+        from app.core.redis import get_redis
+        if (await (await get_redis()).get("regime:early_turn")) in (b"1", "1"):
+            bear_scale = 0.5
+    except Exception:
+        pass
 
     opened: list[str] = []
     for o in opps:
         if slots <= 0:
             break
-        if settings.AUTO_PAPER_REQUIRE_SIGNAL and not o.get("signal_today"):
+        if p["AUTO_PAPER_REQUIRE_SIGNAL"] and not o.get("signal_today"):
             continue
         # against a bearish BTC trend, demand a stronger edge to open a long
-        min_win = settings.AUTO_PAPER_MIN_WIN_PCT
+        min_win = p["AUTO_PAPER_MIN_WIN_PCT"]
         if o.get("market_bias") == "bearish":
-            min_win += 15
+            min_win += p["AUTO_PAPER_BEARISH_WIN_EXTRA"] * bear_scale
         if (o.get("win_chance_pct") or 0) < min_win:
             continue
+        # ML ensemble gate: when ML is on, only open if the model confirms (P_up
+        # >= threshold). The walk-forward test showed the rule+ML ensemble flips a
+        # losing rule into positive OOS expectancy by skipping low-conviction trades.
+        # FAIL-CLOSED: a missing vote (expired cache, refresh not run yet) must not
+        # silently drop the gate — that once let in a trade the model scored 36%.
+        # Missing a setup is cheaper than trading against our own model.
+        if settings.DESK_ML_VOTE_ENABLED:
+            mp = o.get("ml_prob")
+            # spot-only desk can't short: a long in a bearish regime fights the
+            # tide, so demand extra model conviction on top of the base floor
+            ml_floor = p["ML_VOTE_MIN_PROB"]
+            if o.get("market_bias") == "bearish":
+                ml_floor += p["AUTO_PAPER_BEARISH_ML_EXTRA"] * bear_scale
+            if mp is None or mp < ml_floor:
+                if mp is None:
+                    log.info("auto_paper.skip_no_ml_vote", symbol=o.get("symbol"))
+                continue
         sym = o["symbol"]
         if sym in open_syms:
             continue
@@ -61,7 +93,7 @@ async def auto_open(db: AsyncSession, workspace_id, opps: list[dict], prices: di
         entry = prices.get(sym) or o.get("price")
         if not entry:
             continue
-        size = settings.AUTO_PAPER_SIZE_THB
+        size = p["AUTO_PAPER_SIZE_THB"]
         fill = fill_open(entry, size)
         db.add(PaperTrade(
             workspace_id=workspace_id, symbol=sym,
@@ -70,23 +102,38 @@ async def auto_open(db: AsyncSession, workspace_id, opps: list[dict], prices: di
             stop=plan.get("stop"), target=plan.get("target"), fee_pct=fill["fee_pct"],
             status="OPEN",
             rationale=f"auto-paper: win~{o.get('win_chance_pct')}% · {o.get('label', '')}",
-            indicators={},
+            # snapshot the prediction at entry so closed trades can be scored
+            # against it later (calibration: predicted win% vs realized win rate)
+            indicators={
+                "win_chance_pct": o.get("win_chance_pct"),
+                "ml_prob": o.get("ml_prob"),
+                "market_bias": o.get("market_bias"),
+                "opportunity_score": o.get("opportunity_score"),
+            },
         ))
         opened.append(sym)
         open_syms.add(sym)
         slots -= 1
+        try:
+            await notify.send(notify.fmt_entry(o, opened_thb=size), tier=1,
+                              dedupe_key=f"opened:{sym}")
+        except Exception:
+            pass
     if opened:
         log.info("auto_paper.opened", workspace=str(workspace_id), symbols=opened)
     return opened
 
 
 async def auto_close(db: AsyncSession, workspace_id, prices: dict | None = None) -> list[str]:
-    """Close open paper trades whose price hit stop or target."""
-    if not settings.AUTO_PAPER_ENABLED:
-        return []
+    """Close open paper trades whose price hit stop or target.
+
+    Deliberately NOT gated on the AUTO_PAPER_ENABLED kill switch: pausing the
+    game stops new entries, but existing positions must still honour their
+    stop/target/time exits — a pause must never orphan an open trade."""
     open_trades = await _open_positions(db, workspace_id)
     if not open_trades:
         return []
+    p = await tuning.get_params(db)
     prices = dict(prices or {})
     client = BitkubClient()
     now = datetime.now(timezone.utc)
@@ -100,11 +147,39 @@ async def auto_close(db: AsyncSession, workspace_id, prices: dict | None = None)
                 cur = None
         if not cur:
             continue
+        # move-to-breakeven: once price has run AUTO_PAPER_BREAKEVEN_AT_R times the
+        # initial risk (entry→stop) in our favor, raise the stop to entry plus the
+        # round-trip fee so this trade can no longer close as a full loser.
+        if (p["AUTO_PAPER_BREAKEVEN_AT_R"] and t.stop and t.entry_price
+                and t.stop < t.entry_price):
+            r_dist = t.entry_price - t.stop
+            if cur >= t.entry_price + p["AUTO_PAPER_BREAKEVEN_AT_R"] * r_dist:
+                be = t.entry_price * (1 + 2 * (t.fee_pct or 0) / 100)
+                new_stop = min(be, cur)
+                if new_stop > t.stop:
+                    t.stop = new_stop
+                    log.info("auto_paper.breakeven", symbol=t.symbol, stop=round(new_stop, 4))
+                    try:
+                        await notify.send(notify.fmt_breakeven(t.symbol, round(new_stop, 4)),
+                                          tier=1, dedupe_key=f"be:{t.symbol}:{t.id}")
+                    except Exception:
+                        pass
         reason = None
         if t.stop and cur <= t.stop:
-            reason = "stop"
+            # a stop raised to/above entry is a protected winner, not a loss
+            reason = "breakeven" if t.entry_price and t.stop >= t.entry_price else "stop"
         elif t.target and cur >= t.target:
             reason = "target"
+        # catastrophe stop — closes a position bleeding past the max loss even if
+        # it has no stop/target (no orphan can fall forever).
+        elif t.entry_price and (cur / t.entry_price - 1.0) * 100 <= -p["AUTO_PAPER_MAX_LOSS_PCT"]:
+            reason = "max_loss"
+        # time stop — a setup that has resolved to neither stop nor target within
+        # the hold budget is stale; close it and free the slot for a fresh one.
+        elif p["AUTO_PAPER_MAX_HOLD_HOURS"] and t.entry_at:
+            entered = t.entry_at if t.entry_at.tzinfo else t.entry_at.replace(tzinfo=timezone.utc)
+            if (now - entered).total_seconds() >= p["AUTO_PAPER_MAX_HOLD_HOURS"] * 3600:
+                reason = "time"
         if not reason:
             continue
         pnl = close_pnl(t.entry_price, cur, t.size_thb, t.qty)
@@ -116,6 +191,12 @@ async def auto_close(db: AsyncSession, workspace_id, prices: dict | None = None)
         t.pnl_pct = pnl["pnl_pct"]
         t.result = pnl["result"]
         closed.append(t.symbol)
+        try:
+            await notify.send(
+                notify.fmt_close(t.symbol, reason, pnl["pnl_thb"], pnl["pnl_pct"], cur),
+                tier=1, dedupe_key=f"closed:{t.symbol}:{t.id}")
+        except Exception:
+            pass
     if closed:
         log.info("auto_paper.closed", workspace=str(workspace_id), symbols=closed)
     return closed
